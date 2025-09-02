@@ -2,27 +2,29 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-# Install PostgreSQL client for health checks
+# Install PostgreSQL client
 RUN apk add --no-cache postgresql-client
 
-# Copy package files
-COPY package*.json ./
-RUN npm ci --only=production
+# Copy package.json only
+COPY package.json ./
+
+# Install dependencies
+RUN npm install --production && \
+    npm cache clean --force
 
 # Copy source code
 COPY src/ ./src/
 
-# Create non-root user
+# Create non-root user and set permissions
 RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
+    adduser -S nodejs -u 1001 && \
+    chown -R nodejs:nodejs /app
+
 USER nodejs
 
-# Expose port
 EXPOSE 8080
 
-# Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD node src/healthcheck.js || exit 1
 
-# Start application
 CMD ["node", "src/index.js"]

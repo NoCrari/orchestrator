@@ -30,7 +30,7 @@ spec:
     spec:
       containers:
       - name: api-gateway
-        image: your-dockerhub-username/api-gateway:latest
+        image: nocrarii/api-gateway:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 3000

@@ -29,7 +29,7 @@ spec:
     spec:
       containers:
       - name: inventory-app
-        image: your-dockerhub-username/inventory-app:latest
+        image: nocrarii/inventory-app:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080

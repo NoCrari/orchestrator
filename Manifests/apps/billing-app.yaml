@@ -30,7 +30,7 @@ spec:
     spec:
       containers:
       - name: billing-app
-        image: your-dockerhub-username/billing-app:latest
+        image: nocrarii/billing-app:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080
