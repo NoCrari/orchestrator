@@ -58,22 +58,28 @@ spec:
             - name: PGPASSWORD
               valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-password } }
 
+          # Démarrage: juste vérifier que le process écoute
           startupProbe:
             tcpSocket: { port: 8080 }
             failureThreshold: 30
             periodSeconds: 5
+
+          # Vivant ?
           livenessProbe:
             tcpSocket: { port: 8080 }
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 6
+
+          # PRÊT ? (temporaire: indépendant de la DB)
           readinessProbe:
-            httpGet: { path: /ready, port: 8080 }
+            tcpSocket: { port: 8080 }
             initialDelaySeconds: 10
             periodSeconds: 5
             timeoutSeconds: 5
             failureThreshold: 6
+
           resources:
             requests: { cpu: "100m", memory: "128Mi" }
             limits:   { cpu: "200m", memory: "256Mi" }

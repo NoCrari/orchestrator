@@ -1,0 +1,37 @@
+# --- Vagrant / VirtualBox ---
+.vagrant/
+
+# --- Kubeconfig & artefacts locaux du cluster ---
+k3s.yaml
+backups/
+
+# --- Node / JS (si tu build localement) ---
+**/node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- Fichiers d'environnement ---
+.env
+.env.*
+
+# --- Éditeurs / OS ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- Logs / temp ---
+*.log
+logs/
+tmp/
+cache/
+
+# --- Builds (si tu ajoutes des étapes locales) ---
+dist/
+build/
+coverage/

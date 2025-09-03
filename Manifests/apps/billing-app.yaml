@@ -9,6 +9,7 @@ spec:
   ports:
     - port: 8080
       targetPort: 8080
+  # StatefulSet => service headless
   clusterIP: None
 ---
 apiVersion: apps/v1
@@ -47,7 +48,7 @@ spec:
             - name: DB_PASSWORD
               valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-password } }
 
-            # Alias PG* (couverture libs)
+            # Alias PG*
             - name: PGHOST
               valueFrom: { configMapKeyRef: { name: app-config, key: BILLING_DB_HOST } }
             - name: PGPORT
@@ -59,7 +60,7 @@ spec:
             - name: PGPASSWORD
               valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-password } }
 
-            # RabbitMQ (user non-guest)
+            # RabbitMQ
             - name: RABBITMQ_HOST
               valueFrom: { configMapKeyRef: { name: app-config, key: RABBITMQ_HOST } }
             - name: RABBITMQ_PORT
@@ -68,28 +69,33 @@ spec:
               valueFrom: { secretKeyRef: { name: rabbitmq-secrets, key: rabbitmq-user } }
             - name: RABBITMQ_PASSWORD
               valueFrom: { secretKeyRef: { name: rabbitmq-secrets, key: rabbitmq-password } }
-            # URLs AMQP (certaines libs préfèrent)
             - name: AMQP_URL
               value: "amqp://$(RABBITMQ_USER):$(RABBITMQ_PASSWORD)@rabbitmq.microservices.svc.cluster.local:5672"
             - name: RABBITMQ_URL
               value: "amqp://$(RABBITMQ_USER):$(RABBITMQ_PASSWORD)@rabbitmq.microservices.svc.cluster.local:5672"
 
+          # Démarrage
           startupProbe:
             tcpSocket: { port: 8080 }
             failureThreshold: 30
             periodSeconds: 5
+
+          # Vivant ?
           livenessProbe:
             tcpSocket: { port: 8080 }
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 6
+
+          # PRÊT ? (temporaire: indépendant DB/Rabbit)
           readinessProbe:
-            httpGet: { path: /ready, port: 8080 }
+            tcpSocket: { port: 8080 }
             initialDelaySeconds: 10
             periodSeconds: 5
             timeoutSeconds: 5
             failureThreshold: 6
+
           resources:
             requests: { cpu: "100m", memory: "128Mi" }
             limits:   { cpu: "200m", memory: "256Mi" }
