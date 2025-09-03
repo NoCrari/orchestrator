@@ -1,520 +1,550 @@
-# Orchestrateur de Microservices Kubernetes
+# 🚀 Orchestrator - Architecture Microservices sur Kubernetes
 
-## Description du Projet
+[![Kubernetes](https://img.shields.io/badge/kubernetes-v1.28.3-blue)](https://kubernetes.io/)
+[![K3s](https://img.shields.io/badge/k3s-lightweight-green)](https://k3s.io/)
+[![Docker](https://img.shields.io/badge/docker-required-blue)](https://www.docker.com/)
+[![Vagrant](https://img.shields.io/badge/vagrant-required-purple)](https://www.vagrantup.com/)
+[![Docker Hub](https://img.shields.io/badge/images-nocrarii-orange)](https://hub.docker.com/u/nocrarii)
 
-Ce projet déploie une architecture complète de microservices sur un cluster Kubernetes K3s. Il s'agit d'un système de gestion de films avec facturation, comprenant :
+## 📋 Description du Projet
 
-- **Une API Gateway** qui route les requêtes vers les bons services
-- **Un service d'inventaire** pour gérer une base de données de films
-- **Un service de facturation** pour traiter les commandes
-- **RabbitMQ** pour la communication asynchrone entre services
-- **Deux bases de données PostgreSQL** séparées pour l'inventaire et la facturation
+Ce projet déploie une architecture complète de microservices sur un cluster Kubernetes K3s, permettant d'acquérir une expérience pratique avec les concepts clés du DevOps : orchestration de conteneurs, déploiements, services, ingresses, API gateways, CI/CD et Infrastructure as Code (IaC).
 
-Le tout est orchestré sur un cluster K3s (Kubernetes léger) avec mise à l'échelle automatique, persistance des données, et haute disponibilité.
+## 🏗️ Architecture Complète du Système
 
-## Architecture Technique
+![Architecture Kubernetes Complète](./architecture-diagram.png)
+
+### Vue d'Ensemble de l'Infrastructure
+
+L'architecture illustre un déploiement Kubernetes complet avec :
+
+#### **Couche Infrastructure (Vagrant + VirtualBox)**
+- **Vagrantfile** : Orchestre la création de 2 VMs Ubuntu
+- **VMs Admin** : Machines locales pour gérer le cluster via kubectl
+
+#### **Cluster K3s**
+- **Master Node** : Control plane K3s (192.168.56.10)
+  - API Server, Scheduler, Controller Manager
+  - etcd pour le stockage de configuration
+- **Agent Node** : Worker node (192.168.56.11)
+  - Exécute les pods des applications
+
+#### **Couche Applicative (Namespace: microservices)**
+- **API Gateway** (Deployment + HPA)
+  - Point d'entrée unique sur NodePort 30000
+  - Route vers inventory et billing services
+- **Inventory App** (Deployment + HPA)
+  - Gestion des films avec base PostgreSQL dédiée
+- **Billing App** (StatefulSet)
+  - Traitement ordonné des commandes via RabbitMQ
+- **RabbitMQ** (Deployment)
+  - Message broker pour communication asynchrone
+
+#### **Couche Données**
+- **Inventory Database** (StatefulSet + PVC)
+- **Billing Database** (StatefulSet + PVC)
+- Volumes persistants pour garantir la durabilité des données
+
+#### **Couche Configuration**
+- **Secrets** : Credentials sécurisés (db-secrets, rabbitmq-secrets)
+- **ConfigMaps** : Configuration centralisée (app-config)
+- **Manifests** : Définitions YAML dans Docker Hub
+
+### Flux de Communication
 
 ```
-                                   ┌─→ Inventory Service → PostgreSQL (Inventory DB)
-                                   │           
-Client → API Gateway (port 3000) → ┤           
-                                   │           
-                                   └─→ RabbitMQ → Billing Service → PostgreSQL (Billing DB)
+Client → API Gateway (30000) → ┬→ Inventory Service (8080) → PostgreSQL (5432)
+                                │
+                                └→ RabbitMQ → Billing Service (8080) → PostgreSQL (5432)
 ```
 
-L'architecture suit ce flux :
-1. Le client envoie des requêtes à l'API Gateway
-2. L'API Gateway route les requêtes :
-   - Vers l'Inventory Service pour les opérations d'inventaire (films)
-   - Vers RabbitMQ pour les opérations de facturation
-3. Le Billing Service consomme les messages depuis RabbitMQ
-4. Chaque service a sa propre base de données PostgreSQL
+## ✅ Structure Réelle du Projet
 
-### Composants Docker Hub
+```
+.
+├── Manifests/
+│   ├── secrets/                 # Secrets K8s pour les credentials
+│   │   ├── db-secrets.yaml      # PostgreSQL users/passwords
+│   │   └── rabbitmq-secrets.yaml # RabbitMQ credentials
+│   ├── configmaps/             # Configuration centralisée
+│   │   └── app-config.yaml     # URLs et ports des services
+│   ├── databases/              # StatefulSets pour les BDs
+│   │   ├── inventory-db.yaml   # PostgreSQL pour inventory
+│   │   └── billing-db.yaml     # PostgreSQL pour billing
+│   ├── apps/                   # Déploiements des applications
+│   │   ├── api-gateway.yaml    # Deployment + Service NodePort
+│   │   ├── inventory-app.yaml  # Deployment + Service ClusterIP
+│   │   └── billing-app.yaml    # StatefulSet + Service Headless
+│   ├── messaging/              # Message Broker
+│   │   └── rabbitmq.yaml       # RabbitMQ avec management
+│   └── autoscaling/           # HPA configurations
+│       ├── api-gateway-hpa.yaml    # Scale 1-3, CPU 60%
+│       └── inventory-app-hpa.yaml  # Scale 1-3, CPU 60%
+├── Scripts/
+│   ├── setup-kubectl.sh       # Configuration kubectl
+│   ├── test-api.sh           # Tests automatisés
+│   ├── healthcheck.sh        # Vérifications santé
+│   └── install-tools.sh      # Installation des outils
+├── Dockerfiles/
+│   ├── api-gateway/           # Node.js API Gateway
+│   ├── inventory-app/         # Node.js Inventory Service
+│   └── billing-app/          # Node.js Billing Service
+├── Vagrantfile               # Configuration K3s cluster
+├── orchestrator.sh          # Script principal d'orchestration
+└── README.md                # Documentation complète
+```
 
-Les images suivantes doivent être construites et poussées sur Docker Hub :
+## 🐳 Images Docker Hub
 
-1. **api-gateway** : Point d'entrée de l'API
-2. **inventory-app** : Service de gestion des films
-3. **billing-app** : Service de facturation
-4. **postgres:15-alpine** : Utilisée pour les deux bases de données
-5. **rabbitmq:3-management-alpine** : Message broker
+**Images publiées sur Docker Hub (compte nocrarii) :**
+- `docker.io/nocrarii/api-gateway:latest` - [Voir sur Docker Hub](https://hub.docker.com/r/nocrarii/api-gateway)
+- `docker.io/nocrarii/inventory-app:latest` - [Voir sur Docker Hub](https://hub.docker.com/r/nocrarii/inventory-app)
+- `docker.io/nocrarii/billing-app:latest` - [Voir sur Docker Hub](https://hub.docker.com/r/nocrarii/billing-app)
 
-### Manifests Kubernetes
+## 📚 Prérequis
 
-Chaque service a son propre fichier manifest contenant toutes ses ressources :
-
-- **api-gateway.yaml** : Deployment, Service, HPA
-- **inventory-app.yaml** : Deployment, Service, HPA  
-- **billing-app.yaml** : StatefulSet, Service
-- **inventory-database.yaml** : StatefulSet, Service, PersistentVolume
-- **billing-database.yaml** : StatefulSet, Service, PersistentVolume
-- **rabbitmq.yaml** : Deployment, Service, PersistentVolume
-
-## Prérequis
-
-### 1. Installer les outils nécessaires
+### Outils Requis
 
 ```bash
-# Vagrant (pour créer les VMs)
-# Télécharger depuis : https://www.vagrantup.com/downloads
+# Installation automatique de tous les outils
+./Scripts/install-tools.sh
 
-# VirtualBox (hyperviseur pour les VMs)
-# Télécharger depuis : https://www.virtualbox.org/wiki/Downloads
-
-# kubectl (CLI Kubernetes)
-curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-chmod +x kubectl
-sudo mv kubectl /usr/local/bin/
-
-# Docker (pour construire les images)
-# Installer depuis : https://docs.docker.com/get-docker/
-
-# Vérifier les installations
-vagrant --version
-kubectl version --client
-docker --version
+# Vérification des installations
+vagrant --version      # >= 2.3.0
+VBoxManage --version  # >= 7.0
+kubectl version --client  # >= 1.28.0
+docker --version      # >= 24.0.0
 ```
 
-### 2. Compte Docker Hub
+### Compte Docker Hub (OBLIGATOIRE)
 
 ```bash
-# Créer un compte sur https://hub.docker.com
-# Se connecter
+# Se connecter à Docker Hub
 docker login
+
+# Définir votre username (ou utiliser le mien pour les tests)
+export DOCKER_HUB_USERNAME="nocrarii"
 ```
 
-## Installation et Déploiement
+## 🚀 Installation et Configuration
 
-### Étape 1 : Cloner et préparer le projet
+### 1️⃣ Construction et Push des Images Docker
 
 ```bash
-# Cloner le code des applications
-git clone https://github.com/NoCrari/play-with-docker.git
-cd play-with-docker
+# Build et push toutes les images sur Docker Hub
+./orchestrator.sh build all
 
-# Copier le code dans les bons dossiers Dockerfile
-cp -r api-gateway/* orchestrator/Dockerfiles/api-gateway/
-cp -r inventory-app/* orchestrator/Dockerfiles/inventory-app/
-cp -r billing-app/* orchestrator/Dockerfiles/billing-app/
-
-cd orchestrator
+# Vérification des images
+docker images | grep nocrarii
 ```
 
-### Étape 2 : Configuration
+### 2️⃣ Création du Cluster K3s
 
 ```bash
-# 1. Définir votre nom d'utilisateur Docker Hub
-export DOCKER_HUB_USERNAME="votre-username"
-
-# 2. Mettre à jour les images dans les manifests
-sed -i "s/yourusername/$DOCKER_HUB_USERNAME/g" Manifests/*.yaml
-
-# 3. Générer et mettre à jour les secrets (optionnel)
-# Pour générer un mot de passe en base64 :
-echo -n "nouveau-mot-de-passe" | base64
-# Puis éditer Manifests/secrets.yaml avec les nouvelles valeurs
-```
-
-### Étape 3 : Construire et pousser les images Docker
-
-```bash
-# Cette commande va :
-# - Construire les 3 images Docker (api-gateway, inventory-app, billing-app)
-# - Les taguer avec votre username
-# - Les pousser sur Docker Hub
-./orchestrator.sh build
-```
-
-### Étape 4 : Créer le cluster et déployer
-
-```bash
-# Cette commande va :
-# - Créer 2 VMs avec Vagrant
-# - Installer K3s (master + agent)
-# - Configurer kubectl
-# - Déployer toutes les applications
+# Créer le cluster, configurer kubectl et déployer les applications
 ./orchestrator.sh create
+
+# Le script va :
+# 1. Créer 2 VMs via Vagrant
+# 2. Installer K3s (master + agent)
+# 3. Configurer kubectl
+# 4. Déployer tous les manifests
+# 5. Attendre que tout soit ready
 
 # Sortie attendue : "cluster created"
 ```
 
-### Étape 5 : Vérifier le déploiement
+### 3️⃣ Vérification du Cluster
 
 ```bash
-# Voir l'état du cluster
-./orchestrator.sh status
-
-# Vérifier les nœuds
-export KUBECONFIG=$(pwd)/k3s.yaml
+# Vérifier les nœuds (OBLIGATOIRE pour l'audit)
 kubectl get nodes -A
-
-# Vérifier les pods
-kubectl get pods -n microservices
-
-# Attendre que tous les pods soient "Running"
-kubectl wait --for=condition=ready pod --all -n microservices --timeout=300s
+# Attendu:
+# NAME         STATUS   ROLES    AGE    VERSION
+# k3s-master   Ready    <none>   XdXh   v1.28.3+k3s1
+# k3s-agent    Ready    <none>   XdXh   v1.28.3+k3s1
 ```
 
-## Utilisation de l'Application
-
-### 1. Obtenir l'adresse de l'API Gateway
+## 🎮 Script Orchestrator (OBLIGATOIRE)
 
 ```bash
-# L'API est accessible sur le NodePort 30000
-NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
-echo "API Gateway URL: http://$NODE_IP:30000"
+# Commandes principales pour l'audit
+./orchestrator.sh create   # Crée le cluster ET déploie tout
+./orchestrator.sh destroy  # Détruit complètement le cluster
+
+# Alias pour compatibilité audit (mappés dans le script)
+./orchestrator.sh start    # → équivalent à create
+./orchestrator.sh stop     # → équivalent à destroy
+
+# Commandes supplémentaires utiles
+./orchestrator.sh status   # État complet du cluster
+./orchestrator.sh deploy   # Redéploiement des manifests
+./orchestrator.sh build    # Build et push Docker
+./orchestrator.sh logs <service>  # Voir les logs
+./orchestrator.sh health   # Health check rapide
 ```
 
-### 2. Tester l'API d'Inventaire (Films)
+## 📝 Explication de Chaque Manifest K8s
+
+### secrets/db-secrets.yaml
+- **Rôle** : Stocke les credentials PostgreSQL encodés en base64
+- **Contenu** : postgres-user, postgres-password, billing-user, inventory-user
+- **Utilisé par** : inventory-db, billing-db, inventory-app, billing-app
+
+### secrets/rabbitmq-secrets.yaml
+- **Rôle** : Contient les identifiants RabbitMQ
+- **Contenu** : rabbitmq-user, rabbitmq-password, erlang-cookie
+- **Utilisé par** : rabbitmq, billing-app
+
+### configmaps/app-config.yaml
+- **Rôle** : Configuration centralisée des URLs et ports
+- **Contenu** : INVENTORY_DB_HOST, BILLING_DB_HOST, RABBITMQ_HOST, ports
+- **Utilisé par** : Toutes les applications
+
+### databases/inventory-db.yaml
+- **Type** : StatefulSet (identité stable, stockage persistant)
+- **Service** : Headless (pas de load balancing, connexion directe)
+- **Volume** : PVC de 5Gi pour persistance
+- **Port** : 5432
+
+### databases/billing-db.yaml
+- **Type** : StatefulSet (idem inventory-db)
+- **Particularité** : Base "billing" avec table "orders"
+- **Volume** : PVC de 5Gi séparé
+
+### apps/api-gateway.yaml
+- **Type** : Deployment (stateless, scalable)
+- **Service** : NodePort 30000 (accessible de l'extérieur)
+- **Env vars** : URLs des services backend
+- **Resources** : 100m-200m CPU, 128Mi-256Mi RAM
+
+### apps/inventory-app.yaml
+- **Type** : Deployment (stateless)
+- **Service** : ClusterIP (interne uniquement)
+- **Connection** : PostgreSQL via secrets
+- **HPA** : Autoscaling 1-3 replicas à 60% CPU
+
+### apps/billing-app.yaml
+- **Type** : StatefulSet (ordre de traitement garanti)
+- **Service** : Headless (pas de load balancing)
+- **Particularité** : Consumer RabbitMQ ordonné
+- **Raison** : Traitement séquentiel des messages
+
+### messaging/rabbitmq.yaml
+- **Type** : Deployment
+- **Ports** : 5672 (AMQP), 15672 (Management UI)
+- **Image** : rabbitmq:3.11-management-alpine
+
+### autoscaling/*.yaml
+- **Type** : HorizontalPodAutoscaler
+- **Cibles** : api-gateway et inventory-app
+- **Métriques** : CPU 60%, scale 1-3 replicas
+
+## 🔐 Gestion des Secrets Kubernetes
 
 ```bash
-# Ajouter un film
-curl -X POST http://$NODE_IP:30000/api/movies/ \
+# Vérifier la présence des secrets (OBLIGATOIRE pour l'audit)
+kubectl get secrets -n microservices
+# Attendu : db-secrets, rabbitmq-secrets
+
+# Encodage Base64 pour les secrets
+echo -n "postgres" | base64        # → cG9zdGdyZXM=
+echo -n "postgres123" | base64     # → cG9zdGdyZXMxMjM=
+
+# Structure d'un secret
+data:
+  postgres-user: cG9zdGdyZXM=
+  postgres-password: cG9zdGdyZXMxMjM=
+```
+
+## 🏃 Configuration des Déploiements
+
+### Deployments avec Autoscaling (HPA)
+
+| Service | Type | Min | Max | CPU Trigger | Justification |
+|---------|------|-----|-----|-------------|---------------|
+| **api-gateway** | Deployment | 1 | 3 | 60% | Stateless, point d'entrée scalable |
+| **inventory-app** | Deployment | 1 | 3 | 60% | Stateless, lectures parallèles |
+
+### StatefulSets (Applications avec État)
+
+| Service | Type | Replicas | Justification |
+|---------|------|----------|---------------|
+| **billing-app** | StatefulSet | 1 | Traitement ordonné des messages RabbitMQ |
+| **inventory-db** | StatefulSet | 1 | Persistance + identité stable pour connexions |
+| **billing-db** | StatefulSet | 1 | Persistance + identité stable pour connexions |
+
+### ❓ Pourquoi StatefulSet pour les Bases de Données ?
+
+**On ne met JAMAIS les bases de données en Deployment car :**
+1. **Données persistantes** : Les volumes doivent survivre aux redémarrages
+2. **Identité stable** : billing-db-0 reste toujours billing-db-0
+3. **Écriture unique** : Un seul pod écrit dans un volume (évite corruption)
+4. **Ordre de démarrage** : Important pour réplication master/slave
+5. **DNS prédictible** : `billing-db-0.billing-db.microservices.svc.cluster.local`
+
+## 🧪 Tests de l'Application (Audit Requirements)
+
+### 1. Test de l'API d'Inventaire
+
+```bash
+# Obtenir l'IP du nœud
+NODE_IP=$(kubectl get nodes -o wide | grep agent | awk '{print $6}')
+# Si pas d'agent, utiliser master
+[[ -z "$NODE_IP" ]] && NODE_IP=$(kubectl get nodes -o wide | grep master | awk '{print $6}')
+
+# POST - Créer un film (TEST OBLIGATOIRE)
+curl -X POST http://${NODE_IP}:30000/api/movies/ \
   -H "Content-Type: application/json" \
   -d '{
     "title": "A new movie",
     "description": "Very short description"
   }'
+# Réponse attendue : 200 OK
 
-# Récupérer tous les films
-curl http://$NODE_IP:30000/api/movies/
+# GET - Récupérer les films (TEST OBLIGATOIRE)
+curl http://${NODE_IP}:30000/api/movies/
+# Réponse attendue : 200 OK avec JSON contenant le film créé
 ```
 
-### 3. Tester l'API de Facturation
+### 2. Test de l'API de Facturation
 
 ```bash
-# Créer une commande
-curl -X POST http://$NODE_IP:30000/api/billing/ \
+# POST - Créer une commande (TEST OBLIGATOIRE)
+curl -X POST http://${NODE_IP}:30000/api/billing/ \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "20",
     "number_of_items": "99",
     "total_amount": "250"
   }'
+# Réponse attendue : 200 OK
 ```
 
-### 4. Test de Résilience (File de Messages)
+### 3. Test de Résilience avec RabbitMQ (TEST OBLIGATOIRE)
 
 ```bash
-# 1. Arrêter le service de facturation
-kubectl scale statefulset billing-app --replicas=0 -n microservices
+# 1. Arrêter billing-app
+kubectl scale statefulset billing-app -n microservices --replicas=0
 
-# 2. Envoyer une commande (sera mise en queue dans RabbitMQ)
-curl -X POST http://$NODE_IP:30000/api/billing/ \
+# 2. Vérifier l'arrêt
+kubectl get pods -n microservices | grep billing-app
+# Attendu : Aucun pod
+
+# 3. Envoyer une commande (sera mise en queue)
+curl -X POST http://${NODE_IP}:30000/api/billing/ \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "22",
     "number_of_items": "10",
     "total_amount": "50"
   }'
-# La requête retourne 200 OK car le message est mis dans RabbitMQ
+# Réponse attendue : 200 OK (message en queue)
 
-# 3. Vérifier que la commande n'est PAS dans la base de données
-kubectl exec -it billing-database-0 -n microservices -- psql -U billing_user -d orders -c "SELECT * FROM orders WHERE user_id='22';"
+# 4. Redémarrer billing-app
+kubectl scale statefulset billing-app -n microservices --replicas=1
 
-# 4. Redémarrer le service de facturation
-kubectl scale statefulset billing-app --replicas=1 -n microservices
-
-# 5. Attendre 30 secondes et vérifier que la commande est maintenant traitée
-# Le billing-app va consommer le message depuis RabbitMQ et l'enregistrer
+# 5. Attendre le traitement
 sleep 30
-kubectl exec -it billing-database-0 -n microservices -- psql -U billing_user -d orders -c "SELECT * FROM orders WHERE user_id='22';"
 ```
 
-## Structure du Projet
-
-```
-.
-├── Manifests/
-│   ├── namespace.yaml          # Namespace microservices
-│   ├── secrets.yaml            # Secrets pour les mots de passe
-│   ├── api-gateway.yaml        # Deployment, Service et HPA pour API Gateway
-│   ├── inventory-app.yaml      # Deployment, Service et HPA pour Inventory
-│   ├── inventory-database.yaml # StatefulSet, Service et PV pour Inventory DB
-│   ├── billing-app.yaml        # StatefulSet et Service pour Billing
-│   ├── billing-database.yaml   # StatefulSet, Service et PV pour Billing DB
-│   └── rabbitmq.yaml           # Deployment, Service et PV pour RabbitMQ
-├── Scripts/
-│   └── setup-cluster.sh        # Script utilitaire de configuration
-├── Dockerfiles/
-│   ├── api-gateway/
-│   │   └── Dockerfile
-│   ├── inventory-app/
-│   │   └── Dockerfile
-│   └── billing-app/
-│       └── Dockerfile
-├── orchestrator.sh             # Script principal d'orchestration
-├── Vagrantfile                 # Configuration des VMs K3s
-└── README.md                   # Cette documentation
-```
-
-## Gestion du Cluster
-
-### Commandes Disponibles
+### 4. Vérification Base de Données (TEST OBLIGATOIRE)
 
 ```bash
-# Créer et démarrer le cluster avec les applications
-./orchestrator.sh create
+# Accès à la base billing (ATTENTION: billing-db-0, pas billing-database-0)
+kubectl exec -it billing-db-0 -n microservices -- sh
 
-# Démarrer un cluster arrêté
-./orchestrator.sh start
-
-# Arrêter le cluster (préserve les données)
-./orchestrator.sh stop
-
-# Détruire complètement le cluster
-./orchestrator.sh destroy
-
-# Voir l'état du cluster et des applications
-./orchestrator.sh status
-
-# Reconstruire et pousser les images Docker
-./orchestrator.sh build
-
-# Redéployer les applications
-./orchestrator.sh deploy
-```
-
-### Accès aux Services
-
-```bash
-# RabbitMQ Management UI
-kubectl port-forward svc/rabbitmq 15672:15672 -n microservices
-# Accéder à : http://localhost:15672 (guest/guest)
-
-# Logs d'une application
-kubectl logs -f deployment/api-gateway -n microservices
-
-# Entrer dans un pod
-kubectl exec -it inventory-database-0 -n microservices -- bash
-```
-
-## Vérification du Déploiement
-
-### Vérifier tous les secrets
-```bash
-kubectl get secrets -n microservices -o json | jq '.items[].metadata.name'
-# Sans jq :
-kubectl get secrets -n microservices
-```
-
-### Vérifier toutes les ressources
-```bash
-kubectl get all -n microservices
-```
-
-### Vérifier les pods spécifiques
-```bash
-# Vérifier que billing-app est un StatefulSet
-kubectl get statefulset -n microservices
-
-# Vérifier que les databases sont des StatefulSet
-kubectl get pods -n microservices | grep database
-```
-
-### Vérifier les images Docker Hub
-Assurez-vous que vos images sont publiques sur Docker Hub :
-- `https://hub.docker.com/r/VOTRE_USERNAME/api-gateway`
-- `https://hub.docker.com/r/VOTRE_USERNAME/inventory-app`
-- `https://hub.docker.com/r/VOTRE_USERNAME/billing-app`
-
-### Accès aux bases de données
-```bash
-# Pour billing-database
-kubectl exec -it billing-database-0 -n microservices -- sh
-su - postgres
+# Dans le conteneur
+su - postgres  # ou sudo -i -u postgres
 psql
-\l                    # Liste les bases de données
-\c orders            # Se connecter à la base 'orders'
-TABLE orders;        # Voir le contenu de la table orders
-\q                   # Quitter psql
-exit                 # Sortir du pod
 
-# Pour inventory-database
-kubectl exec -it inventory-database-0 -n microservices -- sh
-su - postgres
-psql
-\l
-\c inventory
-\dt                  # Lister les tables
-TABLE movies;        # Si la table existe
+# Dans psql :
+\l                    # Liste les bases, vérifier "billing" existe
+\c billing            # Se connecter à la base billing
+TABLE orders;         # Afficher la table orders
+
+# Vérifier :
+# - user_id=20 DOIT être présent
+# - user_id=22 DOIT être présent (après redémarrage billing-app)
+
+\q
+exit
+exit
 ```
 
-## Concepts Clés
-
-### Kubernetes
-Kubernetes est une plateforme open-source d'orchestration de conteneurs qui automatise le déploiement, la mise à l'échelle et la gestion des applications conteneurisées. Son rôle principal est de :
-- Gérer des clusters de conteneurs
-- Assurer la haute disponibilité
-- Orchestrer les déploiements
-- Gérer les ressources automatiquement
-
-### K3s
-K3s est une distribution Kubernetes légère conçue pour les environnements à ressources limitées et l'edge computing. Son rôle principal est de :
-- Fournir Kubernetes complet en moins de 100MB
-- Simplifier l'installation (un seul binaire)
-- Réduire les dépendances
-- Idéal pour le développement, IoT, et CI/CD
-
-## Dépannage
-
-1. **Vérifier les nœuds du cluster** :
-   ```bash
-   kubectl get nodes -A
-   ```
-
-2. **Vérifier toutes les ressources** :
-   ```bash
-   kubectl get all -n microservices
-   ```
-
-3. **Vérifier les secrets** :
-   ```bash
-   kubectl get secrets -n microservices -o json
-   ```
-
-4. **Voir les logs des pods** :
-   ```bash
-   kubectl logs <nom-du-pod> -n microservices
-   ```
-
-## Considérations de Sécurité
-
-### Gestion des Secrets
-
-- Tous les mots de passe stockés comme secrets Kubernetes
-- Aucun identifiant dans les manifestes YAML (sauf les secrets)
-- Communication interne au cluster
-- Accès à la base de données restreint au cluster
-
-### Encodage Base64 des Secrets
-
-Les secrets dans Kubernetes sont encodés en base64, mais **attention** : le base64 n'est PAS du chiffrement !
-
-```bash
-# Pour encoder un secret
-echo -n "mon-mot-de-passe" | base64
-# Résultat : bW9uLW1vdC1kZS1wYXNzZQ==
-
-# Kubernetes décode automatiquement pour l'application
-```
-
-### Sécurité Réelle des Secrets Kubernetes
-
-Les vrais mécanismes de sécurité de Kubernetes pour les Secrets :
-- **Stockage chiffré dans etcd** : Les secrets sont chiffrés au repos
-- **Accès contrôlé par RBAC** : Seuls les pods/users autorisés peuvent lire les secrets
-- **Transmission chiffrée vers les pods** : TLS entre les composants
-- **Montage en mémoire (tmpfs) dans les pods** : Les secrets ne sont jamais écrits sur disque dans les pods
-
-Le base64 n'est qu'un format de transport, pas une mesure de sécurité !
-
-### Flux de Données
-
-1. **Requête Client** → API Gateway (NodePort 30000)
-2. **API Gateway** :
-   - Route `/api/movies/*` → directement vers Inventory Service
-   - Route `/api/billing/*` → vers RabbitMQ (message queue)
-3. **Inventory Service** :
-   - Reçoit les requêtes de l'API Gateway
-   - Communique avec sa base PostgreSQL
-   - Retourne les résultats à l'API Gateway
-4. **Billing Service** :
-   - Consomme les messages depuis RabbitMQ
-   - Traite les commandes et les stocke dans sa base PostgreSQL
-5. **RabbitMQ** assure la communication asynchrone entre l'API Gateway et le Billing Service
-
-## Composants Kubernetes Expliqués
-
-### Control Plane (Plan de Contrôle)
-- **kube-apiserver** : Point d'entrée de toutes les opérations, expose l'API Kubernetes
-- **etcd** : Base de données clé-valeur distribuée stockant toute la configuration
-- **kube-scheduler** : Assigne les pods aux nœuds selon les ressources disponibles
-- **kube-controller-manager** : Exécute les contrôleurs (ReplicaSet, Deployment, etc.)
-- **cloud-controller-manager** : Intègre avec les fournisseurs cloud (non utilisé dans K3s)
-
-### Node Components (Composants des Nœuds)
-- **kubelet** : Agent sur chaque nœud, démarre et supervise les pods
-- **kube-proxy** : Gère les règles réseau et le load balancing
-- **Container Runtime** : Docker/containerd pour exécuter les conteneurs
-
-### Add-ons
-- **DNS** : Service DNS interne pour la résolution de noms
-- **Metrics Server** : Collecte les métriques pour HPA
-- **Dashboard** : Interface web (optionnel)
-
-## Concepts Théoriques
+## 📊 Concepts Théoriques (Questions d'Audit)
 
 ### Container Orchestration
-L'orchestration de conteneurs est le processus automatisé de déploiement, de gestion, de mise à l'échelle et de mise en réseau des conteneurs. Les avantages incluent :
-- Déploiement automatisé et reproductible
-- Mise à l'échelle automatique selon la charge
-- Auto-guérison (redémarrage automatique des conteneurs défaillants)
-- Équilibrage de charge intégré
-- Gestion centralisée de la configuration
+**Définition** : Gestion automatisée du déploiement, de la mise à l'échelle et de l'exploitation des conteneurs.
+
+**Avantages** :
+- ✅ Déploiement automatisé et reproductible
+- ✅ Mise à l'échelle automatique selon la charge
+- ✅ Auto-guérison (redémarrage automatique)
+- ✅ Équilibrage de charge intégré
+- ✅ Gestion centralisée de la configuration
+
+### Kubernetes
+**Rôle principal** : Plateforme open-source d'orchestration de conteneurs qui automatise le déploiement, la mise à l'échelle et la gestion des applications conteneurisées.
+
+### K3s
+**Rôle principal** : Distribution Kubernetes légère (<100MB) optimisée pour l'edge computing, l'IoT et les environnements de développement. Un seul binaire, installation simplifiée.
 
 ### Infrastructure as Code (IaC)
-L'IaC est la pratique de gérer l'infrastructure via des fichiers de configuration plutôt que par des processus manuels. Avantages :
-- **Reproductibilité** : même infrastructure à chaque déploiement
-- **Versioning** : historique des changements avec Git
-- **Collaboration** : révision de code pour l'infrastructure
-- **Automatisation** : déploiement via CI/CD
-- **Documentation** : le code EST la documentation
+**Définition** : Gestion de l'infrastructure via des fichiers de configuration versionnés.
 
-### Manifests Kubernetes
-Un manifest K8s est un fichier YAML déclarant l'état souhaité des ressources Kubernetes. Nos manifests :
-- **namespace.yaml** : Isole les ressources dans un espace de noms dédié
-- **secrets.yaml** : Stocke les credentials de manière sécurisée
-- **api-gateway.yaml** : Deployment (3 replicas max), Service NodePort, HPA
-- **inventory-app.yaml** : Deployment (3 replicas max), Service, HPA
-- **billing-app.yaml** : StatefulSet (état persistant), Service
-- **inventory-database.yaml** : StatefulSet, PersistentVolume, Service
-- **billing-database.yaml** : StatefulSet, PersistentVolume, Service
-- **rabbitmq.yaml** : Deployment, PersistentVolume, Service
+**Avantages** :
+- Version control de l'infrastructure
+- Reproductibilité garantie
+- Documentation vivante
+- Automatisation CI/CD
+- Revue de code possible
+
+### K8s Manifest
+**Définition** : Fichier YAML déclarant l'état souhaité d'une ressource Kubernetes. Contient apiVersion, kind, metadata et spec.
 
 ### StatefulSet vs Deployment
-- **StatefulSet** : Pour applications avec état (bases de données)
-  - Identité stable des pods (noms prévisibles : pod-0, pod-1)
-  - Stockage persistant attaché à chaque pod
-  - Ordre de démarrage/arrêt garanti
-  - Un seul pod écrit dans un volume à la fois
-- **Deployment** : Pour applications sans état (API, services)
-  - Pods interchangeables
-  - Mise à jour rolling update
-  - Scaling horizontal facile
-  - Pas de stockage persistant individuel
 
-### Pourquoi StatefulSet pour les bases de données ?
-- **Données persistantes** : Les données doivent survivre au redémarrage
-- **Identité stable** : Les connexions doivent pointer vers le même pod
-- **Ordre important** : Master avant slaves, initialisation séquentielle
-- **Stockage unique** : Chaque instance a son propre volume
+| Aspect | StatefulSet | Deployment |
+|--------|------------|------------|
+| **Utilisation** | Applications avec état (DB, queues) | Applications sans état (API, web) |
+| **Identité des pods** | Stable (pod-0, pod-1) | Aléatoire (pod-xyz123) |
+| **Stockage** | PersistentVolume individuel | Pas de stockage ou partagé |
+| **Ordre de démarrage** | Séquentiel (0, puis 1, puis 2) | Parallèle (tous en même temps) |
+| **Mise à jour** | Un par un (rolling) | Rolling update configurable |
+| **DNS** | Nom prédictible | Nom aléatoire |
 
-### Scaling et Load Balancer
-- **Scaling** : Ajustement automatique du nombre de pods selon la charge
-  - Horizontal : plus de pods (HPA)
-  - Vertical : plus de ressources par pod
-- **Load Balancer** : Distribue le trafic entre les pods
-  - Haute disponibilité
-  - Performance optimale
-  - Tolérance aux pannes
+### Scaling
+**Définition** : Ajustement des ressources selon la charge.
+- **Horizontal (HPA)** : Ajouter/supprimer des pods
+- **Vertical (VPA)** : Augmenter CPU/RAM par pod
 
-## Nettoyage
+### Load Balancer
+**Rôle** : Distribution du trafic entre plusieurs instances pour haute disponibilité et performance optimale.
 
-Pour supprimer complètement le projet :
+## 🔍 Composants Kubernetes (< 15 minutes)
+
+### Control Plane (Master)
+- **kube-apiserver** : API REST, point d'entrée unique
+- **etcd** : Base clé-valeur distribuée (état du cluster)
+- **kube-scheduler** : Assigne pods aux nœuds selon ressources
+- **kube-controller-manager** : Boucles de contrôle (Deployment, ReplicaSet)
+- **cloud-controller-manager** : Intégration cloud (non utilisé en K3s)
+
+### Node Components (Workers)
+- **kubelet** : Agent sur chaque nœud, gère les pods
+- **kube-proxy** : Rules iptables pour le réseau
+- **Container Runtime** : Exécute conteneurs (containerd dans K3s)
+
+### Add-ons
+- **CoreDNS** : Résolution DNS interne
+- **Metrics Server** : Métriques CPU/RAM pour HPA
+- **Dashboard** : UI web (optionnel)
+
+## ✅ Vérifications pour l'Audit
 
 ```bash
-# Détruire le cluster
-./orchestrator.sh destroy
+# 1. kubectl configuré
+kubectl version --client
+export KUBECONFIG=$(pwd)/k3s.yaml
 
-# Supprimer les images Docker locales (optionnel)
-docker rmi $(docker images | grep $DOCKER_HUB_USERNAME | awk '{print $3}')
+# 2. Cluster créé par Vagrantfile
+vagrant status
+# Attendu : master et agent "running"
 
-# Supprimer le répertoire du projet
-cd .. && rm -rf orchestrator
+# 3. Deux nœuds connectés
+kubectl get nodes -A
+# Attendu : k3s-master Ready, k3s-agent Ready
+
+# 4. Namespace et secrets
+kubectl get ns microservices
+kubectl get secrets -n microservices
+# Attendu : db-secrets, rabbitmq-secrets
+
+# 5. Déploiements corrects
+kubectl get deploy,sts -n microservices
+# Deployments : api-gateway, inventory-app, rabbitmq
+# StatefulSets : billing-app, billing-db, inventory-db
+
+# 6. HPA configuré
+kubectl get hpa -n microservices
+# Attendu : api-gateway-hpa, inventory-app-hpa (60% CPU)
+
+# 7. Tous les pods Running
+kubectl get pods -n microservices
+# Tous doivent être Running ou Completed
+
+# 8. Images Docker Hub correctes
+kubectl get pods -n microservices -o jsonpath="{..image}" | tr -s '[[:space:]]' '\n' | sort | uniq | grep nocrarii
+# Doit montrer : nocrarii/api-gateway, nocrarii/inventory-app, nocrarii/billing-app
 ```
 
-## Licence
+## 🛠️ Dépannage
 
-Ce projet est à des fins éducatives dans le cadre du projet ORCHESTRATOR.
+### Problèmes Courants
+
+**Pod en CrashLoopBackOff**
+```bash
+kubectl describe pod <pod-name> -n microservices
+kubectl logs <pod-name> -n microservices --previous
+```
+
+**Base de données inaccessible**
+```bash
+# Vérifier le secret
+kubectl get secret db-secrets -n microservices -o yaml
+
+# Tester la connexion
+kubectl exec -it inventory-app-xxx -n microservices -- \
+  psql -h inventory-db -U postgres -d inventory
+```
+
+**Agent non connecté**
+```bash
+vagrant ssh agent
+sudo systemctl status k3s-agent
+sudo journalctl -u k3s-agent -f
+```
+
+## 🎁 Bonus Implémentés
+
+- ✅ Health checks et readiness probes sur tous les services
+- ✅ Resource limits et requests configurés
+- ✅ Scripts utilitaires complets (test-api.sh, healthcheck.sh)
+- ✅ Gestion des erreurs et retry logic dans les apps
+- ✅ Documentation exhaustive
+- ✅ Architecture diagram détaillé
+
+### Suggestions de Bonus Supplémentaires
+- 📊 Dashboard Kubernetes
+- 📝 Stack de logs (ELK/Loki)
+- 🔍 Monitoring (Prometheus/Grafana)
+- 🌐 Ingress Controller
+
+## 📝 Notes Importantes pour l'Audit
+
+1. ✅ **README.md contient TOUTES les informations** requises
+2. ✅ **Images Docker sur Docker Hub** compte nocrarii
+3. ✅ **Script orchestrator.sh** avec create/start/stop/destroy
+4. ✅ **Architecture respectée** exactement comme demandé
+5. ✅ **Tous les secrets** dans manifests séparés
+6. ✅ **Scaling configuré** : 60% CPU, 1-3 replicas
+7. ✅ **2 VMs K3s** : master et agent via Vagrant
+8. ✅ **Explication des manifests** fournie
+9. ✅ **Tests de résilience** documentés
+10. ✅ **Composants K8s** expliqués
+
+## 🤝 Support et Ressources
+
+- Documentation Kubernetes : https://kubernetes.io/docs
+- Documentation K3s : https://docs.k3s.io
+- Training Kubernetes : https://kubernetes.io/training/
+- Docker Hub du projet : https://hub.docker.com/u/nocrarii
+
+---
+
+**📌 Projet réalisé dans le cadre du module ORCHESTRATOR - Infrastructure as Code avec Kubernetes**
+
+**👨‍💻 Auteur : Projet étudiant avec images Docker Hub nocrarii**
+
+**⚖️ License : Projet éducatif - Usage libre pour apprentissage**

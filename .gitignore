@@ -4,6 +4,7 @@
 # --- Kubeconfig & artefacts locaux du cluster ---
 k3s.yaml
 backups/
+.k3s-token
 
 # --- Node / JS (si tu build localement) ---
 **/node_modules/
