@@ -93,27 +93,26 @@ create_cluster() {
 configure_kubectl() {
     print_message "$BLUE" "Configuring kubectl..."
     
-    # Get kubeconfig from master node
+    # Get kubeconfig from master
     vagrant ssh master -c "sudo cat /etc/rancher/k3s/k3s.yaml" > /tmp/k3s.yaml
     
-    # Get master IP
-    MASTER_IP=$(vagrant ssh master -c "hostname -I | awk '{print \$1}'" | tr -d '\r')
+    # Get master IP (already defined as 192.168.56.10)
+    MASTER_IP="192.168.56.10"
     
     # Update kubeconfig with correct IP
     sed -i "s/127.0.0.1/$MASTER_IP/g" /tmp/k3s.yaml
     
-    # Merge with existing kubeconfig or create new one
-    if [ -f "$KUBECTL_CONFIG" ]; then
-        cp "$KUBECTL_CONFIG" "$KUBECTL_CONFIG.backup"
-        KUBECONFIG="$KUBECTL_CONFIG:/tmp/k3s.yaml" kubectl config view --flatten > /tmp/merged_config
-        mv /tmp/merged_config "$KUBECTL_CONFIG"
-    else
-        mkdir -p $(dirname "$KUBECTL_CONFIG")
-        cp /tmp/k3s.yaml "$KUBECTL_CONFIG"
+    # Create .kube directory
+    mkdir -p "$HOME/.kube"
+    
+    # Backup existing config
+    if [ -f "$HOME/.kube/config" ]; then
+        cp "$HOME/.kube/config" "$HOME/.kube/config.backup-$(date +%Y%m%d-%H%M%S)"
     fi
     
-    # Set context
-    kubectl config use-context default
+    # Copy new config
+    cp /tmp/k3s.yaml "$HOME/.kube/config"
+    chmod 600 "$HOME/.kube/config"
     
     print_message "$GREEN" "kubectl configured successfully ✓"
 }
