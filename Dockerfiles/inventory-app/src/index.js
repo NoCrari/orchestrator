@@ -1,136 +1,125 @@
+// Dockerfiles/inventory-app/src/index.js
+
+const express = require('express');
+const { Pool } = require('pg');
+
+const PORT = Number(process.env.PORT || 8080);
+
+const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// --- DB Pool (avec keepAlive) ---
 const pool = new Pool({
     host: process.env.DB_HOST || 'inventory-db',
-    port: process.env.DB_PORT || 5432,
+    port: Number(process.env.DB_PORT || 5432),
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
     database: process.env.DB_NAME || 'inventory',
-    user: process.env.DB_USER || 'inventory_user',
-    password: process.env.DB_PASSWORD || 'inv123',
-    max: 20,
+    max: 10,
+    ssl: false,
     idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 2000,
+    allowExitOnIdle: false
 });
 
-// Middleware
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+// --- état de readiness applicatif ---
+let ready = false;
 
-// Initialize database
-async function initDatabase() {
-    try {
-        await pool.query(`
-            CREATE TABLE IF NOT EXISTS movies (
-                id SERIAL PRIMARY KEY,
-                title VARCHAR(255) NOT NULL,
-                description TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        `);
-        console.log('Database initialized');
-    } catch (error) {
-        console.error('Error initializing database:', error);
+// --- util: retry avec backoff expo ---
+async function withRetry(fn, { retries = 10, baseMs = 500 } = {}) {
+    let attempt = 0;
+    for (; ;) {
+        try { return await fn(); }
+        catch (err) {
+            attempt++;
+            if (attempt > retries) throw err;
+            const delay = Math.min(10000, baseMs * Math.pow(2, attempt)); // cap à 10s
+            console.warn(`[init] tentative ${attempt}/${retries} échouée: ${err.code || err.message}. Retry dans ${delay}ms`);
+            await new Promise(r => setTimeout(r, delay));
+        }
     }
 }
 
-// Health check endpoint
-app.get('/health', async (req, res) => {
-    try {
-        await pool.query('SELECT 1');
-        res.status(200).json({ status: 'healthy', service: 'inventory-app' });
-    } catch (error) {
-        res.status(503).json({ status: 'unhealthy', service: 'inventory-app', error: error.message });
-    }
+// --- Init DB (création table de démo) ---
+async function initDatabase() {
+    await withRetry(async () => {
+        await pool.query('SELECT 1'); // test connectivité
+    }, { retries: 12, baseMs: 500 });
+
+    await pool.query(`
+    CREATE TABLE IF NOT EXISTS movies (
+      id SERIAL PRIMARY KEY,
+      title VARCHAR(255) NOT NULL,
+      description TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+    console.log('Database initialized ✅');
+}
+
+// --- Probes ---
+app.get('/health', (_req, res) => {
+    // liveness: juste prouver que le process répond
+    res.status(200).json({ status: 'healthy', service: 'inventory-app' });
 });
 
-// Ready check endpoint
-app.get('/ready', async (req, res) => {
+app.get('/ready', async (_req, res) => {
+    // readiness: vérifie DB
     try {
         await pool.query('SELECT 1');
+        ready = true;
         res.status(200).json({ status: 'ready', service: 'inventory-app' });
-    } catch (error) {
+    } catch {
+        ready = false;
         res.status(503).json({ status: 'not ready', service: 'inventory-app' });
     }
 });
 
-// Get all movies
-app.get('/', async (req, res) => {
+// --- Routes CRUD minimalistes ---
+app.get('/', async (_req, res) => {
     try {
-        const result = await pool.query('SELECT * FROM movies ORDER BY created_at DESC');
-        res.json(result.rows);
-    } catch (error) {
-        console.error('Error fetching movies:', error);
+        const r = await pool.query('SELECT * FROM movies ORDER BY created_at DESC');
+        res.json(r.rows);
+    } catch (err) {
+        console.error('Error fetching movies:', err);
         res.status(500).json({ error: 'Failed to fetch movies' });
     }
 });
 
-// Get movie by ID
-app.get('/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const result = await pool.query('SELECT * FROM movies WHERE id = $1', [id]);
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Movie not found' });
-        }
-        res.json(result.rows[0]);
-    } catch (error) {
-        console.error('Error fetching movie:', error);
-        res.status(500).json({ error: 'Failed to fetch movie' });
-    }
-});
-
-// Create new movie
 app.post('/', async (req, res) => {
     try {
-        const { title, description } = req.body;
-        if (!title) {
-            return res.status(400).json({ error: 'Title is required' });
-        }
-        const result = await pool.query(
+        const { title, description } = req.body || {};
+        if (!title) return res.status(400).json({ error: 'Title is required' });
+        const r = await pool.query(
             'INSERT INTO movies (title, description) VALUES ($1, $2) RETURNING *',
             [title, description]
         );
-        res.status(201).json(result.rows[0]);
-    } catch (error) {
-        console.error('Error creating movie:', error);
+        res.status(201).json(r.rows[0]);
+    } catch (err) {
+        console.error('Error creating movie:', err);
         res.status(500).json({ error: 'Failed to create movie' });
     }
 });
 
-// Update movie
-app.put('/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const { title, description } = req.body;
-        const result = await pool.query(
-            'UPDATE movies SET title = $1, description = $2 WHERE id = $3 RETURNING *',
-            [title, description, id]
-        );
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Movie not found' });
-        }
-        res.json(result.rows[0]);
-    } catch (error) {
-        console.error('Error updating movie:', error);
-        res.status(500).json({ error: 'Failed to update movie' });
-    }
-});
-
-// Delete movie
-app.delete('/:id', async (req, res) => {
-    try {
-        const { id } = req.params;
-        const result = await pool.query('DELETE FROM movies WHERE id = $1 RETURNING *', [id]);
-        if (result.rows.length === 0) {
-            return res.status(404).json({ error: 'Movie not found' });
-        }
-        res.json({ message: 'Movie deleted successfully' });
-    } catch (error) {
-        console.error('Error deleting movie:', error);
-        res.status(500).json({ error: 'Failed to delete movie' });
-    }
-});
-
-// Start server
-app.listen(PORT, async () => {
+// --- Start server d'abord, puis init en arrière-plan ---
+app.listen(PORT, () => {
     console.log(`Inventory app running on port ${PORT}`);
-    await initDatabase();
+    // on n'arrête PAS le process en cas d'échec, on log & on retry
+    initDatabase()
+        .then(() => { ready = true; })
+        .catch(err => {
+            ready = false;
+            console.error('DB init failed after retries:', err);
+            // on ne fait PAS process.exit(1) -> laisse K8s retries via readiness
+        });
 });
 
+// Sécurité: ne jamais quitter silencieusement
+process.on('unhandledRejection', (r) => console.error('unhandledRejection:', r));
+process.on('uncaughtException', (e) => console.error('uncaughtException:', e));
+process.on('SIGTERM', async () => {
+    console.log('SIGTERM received, closing DB pool...');
+    await pool.end().catch(() => { });
+    process.exit(0);
+});
