@@ -1,35 +1,34 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: billing-app
+  name: inventory-app
   namespace: microservices
 spec:
   selector:
-    app: billing-app
+    app: inventory-app
   ports:
     - port: 8080
       targetPort: 8080
-  clusterIP: None
+  type: ClusterIP
 ---
 apiVersion: apps/v1
-kind: StatefulSet
+kind: Deployment
 metadata:
-  name: billing-app
+  name: inventory-app
   namespace: microservices
 spec:
-  serviceName: billing-app
   replicas: 1
   selector:
     matchLabels:
-      app: billing-app
+      app: inventory-app
   template:
     metadata:
       labels:
-        app: billing-app
+        app: inventory-app
     spec:
       containers:
-        - name: billing-app
-          image: nocrarii/billing-app:latest
+        - name: inventory-app
+          image: nocrarii/inventory-app:latest
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -37,42 +36,27 @@ spec:
             - name: PORT
               value: "8080"
             - name: DB_HOST
-              valueFrom: { configMapKeyRef: { name: app-config, key: BILLING_DB_HOST } }
+              valueFrom: { configMapKeyRef: { name: app-config, key: INVENTORY_DB_HOST } }
             - name: DB_PORT
-              valueFrom: { configMapKeyRef: { name: app-config, key: BILLING_DB_PORT } }
+              valueFrom: { configMapKeyRef: { name: app-config, key: INVENTORY_DB_PORT } }
             - name: DB_NAME
-              value: "billing"
+              value: "inventory"
             - name: DB_USER
               valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-user } }
             - name: DB_PASSWORD
               valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-password } }
 
-            # Alias PG* (couverture libs)
+            # Alias PG* (certaines libs les lisent directement)
             - name: PGHOST
-              valueFrom: { configMapKeyRef: { name: app-config, key: BILLING_DB_HOST } }
+              valueFrom: { configMapKeyRef: { name: app-config, key: INVENTORY_DB_HOST } }
             - name: PGPORT
-              valueFrom: { configMapKeyRef: { name: app-config, key: BILLING_DB_PORT } }
+              valueFrom: { configMapKeyRef: { name: app-config, key: INVENTORY_DB_PORT } }
             - name: PGDATABASE
-              value: "billing"
+              value: "inventory"
             - name: PGUSER
               valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-user } }
             - name: PGPASSWORD
               valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-password } }
-
-            # RabbitMQ (user non-guest)
-            - name: RABBITMQ_HOST
-              valueFrom: { configMapKeyRef: { name: app-config, key: RABBITMQ_HOST } }
-            - name: RABBITMQ_PORT
-              valueFrom: { configMapKeyRef: { name: app-config, key: RABBITMQ_PORT } }
-            - name: RABBITMQ_USER
-              valueFrom: { secretKeyRef: { name: rabbitmq-secrets, key: rabbitmq-user } }
-            - name: RABBITMQ_PASSWORD
-              valueFrom: { secretKeyRef: { name: rabbitmq-secrets, key: rabbitmq-password } }
-            # URLs AMQP (certaines libs préfèrent)
-            - name: AMQP_URL
-              value: "amqp://$(RABBITMQ_USER):$(RABBITMQ_PASSWORD)@rabbitmq.microservices.svc.cluster.local:5672"
-            - name: RABBITMQ_URL
-              value: "amqp://$(RABBITMQ_USER):$(RABBITMQ_PASSWORD)@rabbitmq.microservices.svc.cluster.local:5672"
 
           startupProbe:
             tcpSocket: { port: 8080 }

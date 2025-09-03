@@ -1,508 +1,304 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-# Orchestrator Script for Kubernetes Microservices Architecture
-# This script manages the entire infrastructure lifecycle
+# ==============================
+# Orchestrator K3s + Manifests
+# ==============================
 
-set -e
-
-# Color codes for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-# Configuration
+# --- Config ---
 NAMESPACE="microservices"
-KUBECTL_CONFIG="$HOME/.kube/config"
-VAGRANT_DIR="."
 MANIFESTS_DIR="./Manifests"
-SCRIPTS_DIR="./Scripts"
+KUBECONFIG_FILE="$(pwd)/k3s.yaml"
+DOCKER_USER="${DOCKER_HUB_USERNAME:-nocrarii}"
 
-# Function to print colored output
-print_message() {
-    local color=$1
-    local message=$2
-    echo -e "${color}${message}${NC}"
+IMAGES=("api-gateway" "inventory-app" "billing-app")
+IMAGE_DIR_BASE="Dockerfiles"
+
+# --- Colors ---
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
+
+usage() {
+  cat <<EOF
+Usage: $0 {create|deploy|status|destroy|build [target]|logs <svc>|scale <deploy> <n>|health|backup|restore <dir>}
+Commands:
+  create           Crée le cluster K3s (Vagrant), configure kubectl, applique tous les manifests
+  deploy           (Ré)applique les manifests sur un cluster existant
+  status           Affiche l'état du cluster, pods, services, HPAs + URL d'accès
+  destroy          Détruit les VMs et nettoie le kubeconfig local (sans bloquer si cluster down)
+  build [target]   Build & push images Docker (targets: ${IMAGES[*]} | all)
+  logs <svc>       Suivre les logs d'un déploiement/statefulset (ex: api-gateway, inventory-app, billing-app)
+  scale <deploy> <n>  Scale un Deployment (ex: scale api-gateway 2)
+  health           Vérifs rapides (nodes/pods/services)
+  backup           Dump des DBs (inventory, billing) dans ./backups/TS/
+  restore <dir>    Restore des DBs depuis un dossier ./backups/...
+EOF
 }
 
-# Function to check prerequisites
+# --- Helpers ---
+say() { echo -e "${1}${2}${NC}"; }
+need() { command -v "$1" >/dev/null 2>&1 || { say "$RED" "Manque: $1"; exit 1; }; }
+
+get_node_ip() {
+  kubectl get nodes -o wide | awk '/ Ready / {print $6; exit}'
+}
+
 check_prerequisites() {
-    print_message "$BLUE" "Checking prerequisites..."
-    
-    local missing_deps=()
-    
-    # Check Vagrant
-    if ! command -v vagrant &> /dev/null; then
-        missing_deps+=("vagrant")
-    fi
-    
-    # Check VirtualBox
-    if ! command -v VBoxManage &> /dev/null; then
-        missing_deps+=("virtualbox")
-    fi
-    
-    # Check kubectl
-    if ! command -v kubectl &> /dev/null; then
-        missing_deps+=("kubectl")
-    fi
-    
-    # Check Docker
-    if ! command -v docker &> /dev/null; then
-        missing_deps+=("docker")
-    fi
-    
-    if [ ${#missing_deps[@]} -ne 0 ]; then
-        print_message "$RED" "Missing dependencies: ${missing_deps[*]}"
-        print_message "$YELLOW" "Please install missing dependencies before continuing."
-        exit 1
-    fi
-    
-    print_message "$GREEN" "All prerequisites are installed ✓"
+  say "$BLUE" "Checking prerequisites..."
+  need vagrant; need kubectl; need docker; need awk
+  command -v VBoxManage >/dev/null 2>&1 || { say "$YELLOW" "VirtualBox CLI introuvable (VBoxManage)."; exit 1; }
+  say "$GREEN" "All prerequisites are installed ✓"
 }
 
-# Function to create the cluster
-create_cluster() {
-    print_message "$BLUE" "Creating K3s cluster..."
-    
-    # Check if Vagrantfile exists
-    if [ ! -f "Vagrantfile" ]; then
-        print_message "$RED" "Vagrantfile not found!"
-        exit 1
-    fi
-    
-    # Start Vagrant VMs
-    vagrant up
-    
-    # Wait for cluster to be ready
-    sleep 30
-    
-    # Configure kubectl
-    configure_kubectl
-    
-    # Wait for nodes to be ready
-    wait_for_nodes
-    
-    # Create namespace
-    kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
-    
-    print_message "$GREEN" "Cluster created successfully ✓"
-}
-
-# Function to configure kubectl
 configure_kubectl() {
-    print_message "$BLUE" "Configuring kubectl..."
-    
-    # Get kubeconfig from master
-    vagrant ssh master -c "sudo cat /etc/rancher/k3s/k3s.yaml" > /tmp/k3s.yaml
-    
-    # Get master IP (already defined as 192.168.56.10)
-    MASTER_IP="192.168.56.10"
-    
-    # Update kubeconfig with correct IP
-    sed -i "s/127.0.0.1/$MASTER_IP/g" /tmp/k3s.yaml
-    
-    # Create .kube directory
-    mkdir -p "$HOME/.kube"
-    
-    # Backup existing config
-    if [ -f "$HOME/.kube/config" ]; then
-        cp "$HOME/.kube/config" "$HOME/.kube/config.backup-$(date +%Y%m%d-%H%M%S)"
-    fi
-    
-    # Copy new config
-    cp /tmp/k3s.yaml "$HOME/.kube/config"
-    chmod 600 "$HOME/.kube/config"
-    
-    print_message "$GREEN" "kubectl configured successfully ✓"
+  say "$BLUE" "Configuring kubectl..."
+  vagrant ssh master -c "sudo cat /etc/rancher/k3s/k3s.yaml" > "$KUBECONFIG_FILE"
+  sed -i 's/127.0.0.1/192.168.56.10/g' "$KUBECONFIG_FILE"
+  export KUBECONFIG="$KUBECONFIG_FILE"
+  say "$GREEN" "kubectl configured ✓ ($KUBECONFIG_FILE)"
 }
 
-# Function to wait for nodes to be ready
 wait_for_nodes() {
-    print_message "$BLUE" "Waiting for nodes to be ready..."
-    
-    local max_attempts=60
-    local attempt=0
-    
-    while [ $attempt -lt $max_attempts ]; do
-        if kubectl get nodes | grep -q "Ready"; then
-            local ready_nodes=$(kubectl get nodes | grep -c "Ready" || true)
-            if [ "$ready_nodes" -eq 2 ]; then
-                print_message "$GREEN" "All nodes are ready ✓"
-                kubectl get nodes
-                return 0
-            fi
-        fi
-        
-        echo -n "."
-        sleep 5
-        attempt=$((attempt + 1))
-    done
-    
-    print_message "$RED" "Timeout waiting for nodes to be ready"
-    return 1
-}
-
-# Function to deploy applications
-deploy_applications() {
-    print_message "$BLUE" "Deploying applications..."
-    
-    # Check if manifests directory exists
-    if [ ! -d "$MANIFESTS_DIR" ]; then
-        print_message "$RED" "Manifests directory not found!"
-        exit 1
+  say "$BLUE" "Waiting for nodes to be ready..."
+  local tries=60
+  for i in $(seq 1 $tries); do
+    if kubectl get nodes >/dev/null 2>&1 && \
+       [ "$(kubectl get nodes --no-headers | awk '/ Ready /{print NF}' | wc -l)" -ge 1 ] && \
+       kubectl get nodes | grep -q " Ready "; then
+      say "$GREEN" "Nodes ready ✓"; kubectl get nodes; return 0
     fi
-    
-    # Deploy in order
-    print_message "$YELLOW" "Deploying secrets..."
-    kubectl apply -f $MANIFESTS_DIR/secrets/
-    
-    print_message "$YELLOW" "Deploying config maps..."
-    kubectl apply -f $MANIFESTS_DIR/configmaps/
-    
-    print_message "$YELLOW" "Deploying storage..."
-    kubectl apply -f $MANIFESTS_DIR/storage/
-    
-    print_message "$YELLOW" "Deploying databases..."
-    kubectl apply -f $MANIFESTS_DIR/databases/
-    
-    # Wait for databases to be ready
-    wait_for_statefulsets
-    
-    print_message "$YELLOW" "Deploying RabbitMQ..."
-    kubectl apply -f $MANIFESTS_DIR/messaging/
-    
-    print_message "$YELLOW" "Deploying applications..."
-    kubectl apply -f $MANIFESTS_DIR/apps/
-    
-    print_message "$YELLOW" "Configuring autoscaling..."
-    kubectl apply -f $MANIFESTS_DIR/autoscaling/
-    
-    print_message "$GREEN" "All applications deployed successfully ✓"
-    
-    # Show deployment status
-    show_status
+    sleep 5
+  done
+  say "$RED" "Timeout: nodes not ready"; exit 1
 }
 
-# Function to wait for StatefulSets
-wait_for_statefulsets() {
-    print_message "$BLUE" "Waiting for databases to be ready..."
-    
-    kubectl wait --for=condition=ready pod -l app=inventory-db -n $NAMESPACE --timeout=300s
-    kubectl wait --for=condition=ready pod -l app=billing-db -n $NAMESPACE --timeout=300s
-    
-    print_message "$GREEN" "Databases are ready ✓"
+create_namespace() {
+  kubectl create namespace "$NAMESPACE" --dry-run=client -o yaml | kubectl apply -f -
 }
 
-# Function to start the cluster
-start_cluster() {
-    print_message "$BLUE" "Starting cluster..."
-    
-    vagrant up
-    
-    # Wait for cluster to be ready
-    sleep 20
-    wait_for_nodes
-    
-    print_message "$GREEN" "Cluster started successfully ✓"
+apply_manifests() {
+  say "$BLUE" "Applying manifests..."
+
+  # 1) secrets & config
+  say "$YELLOW" "→ secrets"
+  kubectl apply -n "$NAMESPACE" -f "$MANIFESTS_DIR/secrets/db-secrets.yaml"
+  kubectl apply -n "$NAMESPACE" -f "$MANIFESTS_DIR/secrets/rabbitmq-secrets.yaml"
+
+  say "$YELLOW" "→ configmaps"
+  kubectl apply -n "$NAMESPACE" -f "$MANIFESTS_DIR/configmaps/app-config.yaml"
+
+  # 2) databases (statefulsets + headless)
+  say "$YELLOW" "→ databases"
+  kubectl apply -n "$NAMESPACE" -f "$MANIFESTS_DIR/databases/inventory-db.yaml"
+  kubectl apply -n "$NAMESPACE" -f "$MANIFESTS_DIR/databases/billing-db.yaml"
+
+  # 3) messaging
+  say "$YELLOW" "→ rabbitmq"
+  kubectl apply -n "$NAMESPACE" -f "$MANIFESTS_DIR/messaging/rabbitmq.yaml"
+
+  # 4) apps
+  say "$YELLOW" "→ apps"
+  kubectl apply -n "$NAMESPACE" -f "$MANIFESTS_DIR/apps/api-gateway.yaml"
+  kubectl apply -n "$NAMESPACE" -f "$MANIFESTS_DIR/apps/inventory-app.yaml"
+  kubectl apply -n "$NAMESPACE" -f "$MANIFESTS_DIR/apps/billing-app.yaml"
+
+  # 5) autoscaling
+  say "$YELLOW" "→ autoscaling"
+  kubectl apply -n "$NAMESPACE" -f "$MANIFESTS_DIR/autoscaling/api-gateway-hpa.yaml"
+  kubectl apply -n "$NAMESPACE" -f "$MANIFESTS_DIR/autoscaling/inventory-app-hpa.yaml"
 }
 
-# Function to stop the cluster
-stop_cluster() {
-    print_message "$BLUE" "Stopping cluster..."
-    
-    vagrant halt
-    
-    print_message "$GREEN" "Cluster stopped successfully ✓"
+wait_for_workloads() {
+  say "$BLUE" "Waiting for workloads..."
+
+  # DBs
+  kubectl rollout status -n "$NAMESPACE" statefulset/inventory-db --timeout=300s
+  kubectl rollout status -n "$NAMESPACE" statefulset/billing-db   --timeout=300s
+
+  # RabbitMQ
+  kubectl rollout status -n "$NAMESPACE" deploy/rabbitmq --timeout=300s
+
+  # Apps
+  kubectl rollout status -n "$NAMESPACE" deploy/api-gateway   --timeout=300s || true
+  kubectl rollout status -n "$NAMESPACE" deploy/inventory-app --timeout=300s || true
+  kubectl rollout status -n "$NAMESPACE" statefulset/billing-app --timeout=300s || true
 }
 
-# Function to destroy the cluster
-destroy_cluster() {
-    print_message "$YELLOW" "WARNING: This will destroy all data and resources!"
-    read -p "Are you sure? (yes/no): " confirm
-    
-    if [ "$confirm" != "yes" ]; then
-        print_message "$BLUE" "Operation cancelled"
-        exit 0
-    fi
-    
-    print_message "$RED" "Destroying cluster..."
-    
-    # Delete Kubernetes resources first
-    kubectl delete namespace $NAMESPACE --ignore-not-found=true
-    
-    # Destroy Vagrant VMs
-    vagrant destroy -f
-    
-    print_message "$GREEN" "Cluster destroyed successfully ✓"
-}
-
-# Function to show status
 show_status() {
-    print_message "$BLUE" "=== Cluster Status ==="
-    
-    # Show nodes
-    print_message "$YELLOW" "Nodes:"
-    kubectl get nodes
-    
-    echo ""
-    
-    # Show pods
-    print_message "$YELLOW" "Pods in $NAMESPACE namespace:"
-    kubectl get pods -n $NAMESPACE
-    
-    echo ""
-    
-    # Show services
-    print_message "$YELLOW" "Services in $NAMESPACE namespace:"
-    kubectl get services -n $NAMESPACE
-    
-    echo ""
-    
-    # Show PVs
-    print_message "$YELLOW" "Persistent Volumes:"
-    kubectl get pv
-    
-    echo ""
-    
-    # Show HPAs
-    print_message "$YELLOW" "Horizontal Pod Autoscalers:"
-    kubectl get hpa -n $NAMESPACE
-    
-    echo ""
-    
-    # Get API Gateway endpoint
-    local api_gateway_ip=$(kubectl get service api-gateway -n $NAMESPACE -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo "pending")
-    local api_gateway_port=$(kubectl get service api-gateway -n $NAMESPACE -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "pending")
-    
-    print_message "$GREEN" "=== Access Information ==="
-    print_message "$YELLOW" "API Gateway URL: http://<node-ip>:$api_gateway_port"
-    print_message "$YELLOW" "To get node IP: kubectl get nodes -o wide"
+  say "$BLUE" "=== Cluster Status ==="
+  say "$YELLOW" "Nodes:"; kubectl get nodes
+  echo
+  say "$YELLOW" "Pods in $NAMESPACE:"; kubectl get pods -n "$NAMESPACE"
+  echo
+  say "$YELLOW" "Services in $NAMESPACE:"; kubectl get svc -n "$NAMESPACE"
+  echo
+  say "$YELLOW" "Persistent Volumes:"; kubectl get pv
+  echo
+  say "$YELLOW" "Horizontal Pod Autoscalers:"; kubectl get hpa -n "$NAMESPACE" || true
+  echo
+
+  local node_ip; node_ip="$(get_node_ip || true)"
+  local node_port; node_port="$(kubectl get svc api-gateway -n "$NAMESPACE" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "30000")"
+  say "$GREEN" "=== Access Information ==="
+  echo "API Gateway URL: http://${node_ip:-<node-ip>}:${node_port}"
+  echo "To get node IP: kubectl get nodes -o wide"
 }
 
-# Function to scale a service
-scale_service() {
-    local service=$2
-    local replicas=$3
-    
-    if [ -z "$service" ] || [ -z "$replicas" ]; then
-        print_message "$RED" "Usage: ./orchestrator.sh scale <service> <replicas>"
-        exit 1
-    fi
-    
-    print_message "$BLUE" "Scaling $service to $replicas replicas..."
-    
-    kubectl scale deployment/$service -n $NAMESPACE --replicas=$replicas
-    
-    print_message "$GREEN" "Scaling completed ✓"
+create_cluster() {
+  say "$BLUE" "Creating K3s cluster..."
+  [ -f Vagrantfile ] || { say "$RED" "Vagrantfile introuvable"; exit 1; }
+  vagrant up
+  sleep 10
+  configure_kubectl
+  wait_for_nodes
+  create_namespace
+  say "$GREEN" "Cluster created ✓"
 }
 
-# Function to show logs
-show_logs() {
-    local service=$2
-    
-    if [ -z "$service" ]; then
-        print_message "$RED" "Usage: ./orchestrator.sh logs <service>"
-        print_message "$YELLOW" "Available services: api-gateway, inventory-app, billing-app, inventory-db, billing-db, rabbitmq"
-        exit 1
-    fi
-    
-    print_message "$BLUE" "Showing logs for $service..."
-    
-    # Check if it's a deployment or statefulset
-    if kubectl get deployment $service -n $NAMESPACE &>/dev/null; then
-        kubectl logs -f deployment/$service -n $NAMESPACE
-    elif kubectl get statefulset $service -n $NAMESPACE &>/dev/null; then
-        kubectl logs -f statefulset/$service -n $NAMESPACE
-    else
-        print_message "$RED" "Service $service not found"
-        exit 1
-    fi
+deploy_all() {
+  apply_manifests
+  wait_for_workloads
+  show_status
 }
 
-# Function to run health checks
+destroy_cluster() {
+  say "$YELLOW" "Destroying cluster..."
+  export KUBECONFIG="$KUBECONFIG_FILE"
+  if kubectl cluster-info >/dev/null 2>&1; then
+    kubectl delete ns "$NAMESPACE" --ignore-not-found --wait=false || true
+  else
+    say "$YELLOW" "Cluster injoignable, on saute le cleanup kubectl."
+  fi
+  vagrant destroy -f || true
+  rm -f "$KUBECONFIG_FILE" || true
+  say "$GREEN" "Destroy terminé."
+}
+
+build_images() {
+  local target="${1:-all}"
+  say "$BLUE" "Docker Hub user: ${DOCKER_USER}"
+
+  local targets=()
+  if [[ "$target" == "all" ]]; then
+    targets=("${IMAGES[@]}")
+  else
+    local ok="false"
+    for img in "${IMAGES[@]}"; do [[ "$img" == "$target" ]] && ok="true"; done
+    [[ "$ok" == "true" ]] || { say "$RED" "Cible inconnue: $target (valides: all ${IMAGES[*]})"; exit 1; }
+    targets=("$target")
+  fi
+
+  for name in "${targets[@]}"; do
+    local ctx="${IMAGE_DIR_BASE}/${name}"
+    local tag="${DOCKER_USER}/${name}:latest"
+    [[ -f "${ctx}/Dockerfile" ]] || { say "$RED" "Dockerfile introuvable: ${ctx}/Dockerfile"; exit 1; }
+    say "$YELLOW" "Build ${tag}"
+    docker build -t "${tag}" "${ctx}"
+    say "$YELLOW" "Push  ${tag}"
+    docker push "${tag}"
+  done
+
+  say "$GREEN" "Build & push terminés ✓"
+  echo "Astuce: relance les workloads:"
+  echo "  kubectl rollout restart -n ${NAMESPACE} deploy/api-gateway deploy/inventory-app"
+  echo "  kubectl rollout restart -n ${NAMESPACE} statefulset/billing-app"
+}
+
+logs_follow() {
+  local svc="${1:-}"
+  [[ -n "$svc" ]] || { say "$RED" "Usage: $0 logs <service>"; exit 1; }
+  if kubectl get deploy "$svc" -n "$NAMESPACE" >/dev/null 2>&1; then
+    kubectl logs -f deploy/"$svc" -n "$NAMESPACE"
+  elif kubectl get statefulset "$svc" -n "$NAMESPACE" >/dev/null 2>&1; then
+    kubectl logs -f statefulset/"$svc" -n "$NAMESPACE"
+  else
+    say "$RED" "Service $svc introuvable (deploy/statefulset)"; exit 1
+  fi
+}
+
+scale_deploy() {
+  local dep="${1:-}"; local n="${2:-}"
+  [[ -n "$dep" && -n "$n" ]] || { say "$RED" "Usage: $0 scale <deployment> <replicas>"; exit 1; }
+  kubectl scale deploy/"$dep" -n "$NAMESPACE" --replicas="$n"
+  say "$GREEN" "Scaled $dep → $n"
+}
+
 health_check() {
-    print_message "$BLUE" "Running health checks..."
-    
-    local all_healthy=true
-    
-    # Check nodes
-    if ! kubectl get nodes | grep -q "Ready"; then
-        print_message "$RED" "✗ Some nodes are not ready"
-        all_healthy=false
-    else
-        print_message "$GREEN" "✓ All nodes are ready"
+  say "$BLUE" "Health checks…"
+  kubectl get nodes
+  kubectl get ns "$NAMESPACE" >/dev/null && say "$GREEN" "✓ namespace $NAMESPACE" || say "$RED" "✗ namespace manquant"
+  for d in api-gateway inventory-app; do
+    if kubectl get deploy "$d" -n "$NAMESPACE" >/dev/null 2>&1; then
+      kubectl get deploy "$d" -n "$NAMESPACE" -o wide
     fi
-    
-    # Check namespace
-    if ! kubectl get namespace $NAMESPACE &>/dev/null; then
-        print_message "$RED" "✗ Namespace $NAMESPACE does not exist"
-        all_healthy=false
-    else
-        print_message "$GREEN" "✓ Namespace $NAMESPACE exists"
+  done
+  for s in billing-app inventory-db billing-db; do
+    if kubectl get statefulset "$s" -n "$NAMESPACE" >/dev/null 2>&1; then
+      kubectl get statefulset "$s" -n "$NAMESPACE" -o wide
     fi
-    
-    # Check deployments
-    local deployments=("api-gateway" "inventory-app")
-    for deployment in "${deployments[@]}"; do
-        if kubectl get deployment $deployment -n $NAMESPACE &>/dev/null; then
-            local ready=$(kubectl get deployment $deployment -n $NAMESPACE -o jsonpath='{.status.readyReplicas}')
-            local desired=$(kubectl get deployment $deployment -n $NAMESPACE -o jsonpath='{.spec.replicas}')
-            if [ "$ready" == "$desired" ]; then
-                print_message "$GREEN" "✓ $deployment: $ready/$desired replicas ready"
-            else
-                print_message "$RED" "✗ $deployment: $ready/$desired replicas ready"
-                all_healthy=false
-            fi
-        else
-            print_message "$RED" "✗ $deployment deployment not found"
-            all_healthy=false
-        fi
-    done
-    
-    # Check statefulsets
-    local statefulsets=("billing-app" "inventory-db" "billing-db")
-    for statefulset in "${statefulsets[@]}"; do
-        if kubectl get statefulset $statefulset -n $NAMESPACE &>/dev/null; then
-            local ready=$(kubectl get statefulset $statefulset -n $NAMESPACE -o jsonpath='{.status.readyReplicas}')
-            local desired=$(kubectl get statefulset $statefulset -n $NAMESPACE -o jsonpath='{.spec.replicas}')
-            if [ "$ready" == "$desired" ]; then
-                print_message "$GREEN" "✓ $statefulset: $ready/$desired replicas ready"
-            else
-                print_message "$RED" "✗ $statefulset: $ready/$desired replicas ready"
-                all_healthy=false
-            fi
-        else
-            print_message "$RED" "✗ $statefulset statefulset not found"
-            all_healthy=false
-        fi
-    done
-    
-    # Check services
-    local services=("api-gateway" "inventory-app" "billing-app" "inventory-db" "billing-db" "rabbitmq")
-    for service in "${services[@]}"; do
-        if kubectl get service $service -n $NAMESPACE &>/dev/null; then
-            print_message "$GREEN" "✓ $service service exists"
-        else
-            print_message "$RED" "✗ $service service not found"
-            all_healthy=false
-        fi
-    done
-    
-    echo ""
-    if [ "$all_healthy" = true ]; then
-        print_message "$GREEN" "=== All health checks passed ✓ ==="
-    else
-        print_message "$RED" "=== Some health checks failed ✗ ==="
-    fi
+  done
 }
 
-# Function to backup databases
-backup_databases() {
-    print_message "$BLUE" "Backing up databases..."
-    
-    local backup_dir="./backups/$(date +%Y%m%d_%H%M%S)"
-    mkdir -p $backup_dir
-    
-    # Backup inventory database
-    print_message "$YELLOW" "Backing up inventory database..."
-    kubectl exec inventory-db-0 -n $NAMESPACE -- pg_dump -U postgres inventory > $backup_dir/inventory_backup.sql
-    
-    # Backup billing database
-    print_message "$YELLOW" "Backing up billing database..."
-    kubectl exec billing-db-0 -n $NAMESPACE -- pg_dump -U postgres billing > $backup_dir/billing_backup.sql
-    
-    print_message "$GREEN" "Databases backed up to $backup_dir ✓"
+backup_dbs() {
+  say "$BLUE" "Backing up databases…"
+  local dir="./backups/$(date +%Y%m%d_%H%M%S)"; mkdir -p "$dir"
+  kubectl exec -n "$NAMESPACE" inventory-db-0 -- pg_dump -U postgres inventory > "$dir/inventory.sql"
+  kubectl exec -n "$NAMESPACE" billing-db-0   -- pg_dump -U postgres billing   > "$dir/billing.sql"
+  say "$GREEN" "Backups → $dir"
 }
 
-# Function to restore databases
-restore_databases() {
-    local backup_dir=$2
-    
-    if [ -z "$backup_dir" ]; then
-        print_message "$RED" "Usage: ./orchestrator.sh restore <backup_dir>"
-        exit 1
-    fi
-    
-    if [ ! -d "$backup_dir" ]; then
-        print_message "$RED" "Backup directory not found: $backup_dir"
-        exit 1
-    fi
-    
-    print_message "$BLUE" "Restoring databases from $backup_dir..."
-    
-    # Restore inventory database
-    if [ -f "$backup_dir/inventory_backup.sql" ]; then
-        print_message "$YELLOW" "Restoring inventory database..."
-        kubectl exec -i inventory-db-0 -n $NAMESPACE -- psql -U postgres inventory < $backup_dir/inventory_backup.sql
-    fi
-    
-    # Restore billing database
-    if [ -f "$backup_dir/billing_backup.sql" ]; then
-        print_message "$YELLOW" "Restoring billing database..."
-        kubectl exec -i billing-db-0 -n $NAMESPACE -- psql -U postgres billing < $backup_dir/billing_backup.sql
-    fi
-    
-    print_message "$GREEN" "Databases restored successfully ✓"
+restore_dbs() {
+  local dir="${1:-}"
+  [[ -n "$dir" && -d "$dir" ]] || { say "$RED" "Usage: $0 restore <backup_dir>"; exit 1; }
+  say "$BLUE" "Restoring from $dir …"
+  [[ -f "$dir/inventory.sql" ]] && kubectl exec -i -n "$NAMESPACE" inventory-db-0 -- psql -U postgres inventory < "$dir/inventory.sql"
+  [[ -f "$dir/billing.sql"   ]] && kubectl exec -i -n "$NAMESPACE" billing-db-0   -- psql -U postgres billing   < "$dir/billing.sql"
+  say "$GREEN" "Restore OK"
 }
 
-# Main script logic
-main() {
-    case "$1" in
-        create)
-            check_prerequisites
-            create_cluster
-            deploy_applications
-            ;;
-        start)
-            start_cluster
-            ;;
-        stop)
-            stop_cluster
-            ;;
-        destroy)
-            destroy_cluster
-            ;;
-        deploy)
-            deploy_applications
-            ;;
-        status)
-            show_status
-            ;;
-        scale)
-            scale_service "$@"
-            ;;
-        logs)
-            show_logs "$@"
-            ;;
-        health)
-            health_check
-            ;;
-        backup)
-            backup_databases
-            ;;
-        restore)
-            restore_databases "$@"
-            ;;
-        *)
-            print_message "$YELLOW" "Usage: $0 {create|start|stop|destroy|deploy|status|scale|logs|health|backup|restore}"
-            echo ""
-            echo "Commands:"
-            echo "  create   - Create the K3s cluster and deploy applications"
-            echo "  start    - Start the existing cluster"
-            echo "  stop     - Stop the cluster"
-            echo "  destroy  - Destroy the cluster and all resources"
-            echo "  deploy   - Deploy applications to existing cluster"
-            echo "  status   - Show cluster and application status"
-            echo "  scale    - Scale a service (usage: scale <service> <replicas>)"
-            echo "  logs     - Show logs for a service (usage: logs <service>)"
-            echo "  health   - Run health checks"
-            echo "  backup   - Backup databases"
-            echo "  restore  - Restore databases (usage: restore <backup_dir>)"
-            exit 1
-            ;;
-    esac
-}
-
-# Run main function
-main "$@"
+# --- Main ---
+cmd="${1:-}"; shift || true
+case "${cmd}" in
+  create)
+    check_prerequisites
+    create_cluster
+    deploy_all
+    ;;
+  deploy)
+    export KUBECONFIG="$KUBECONFIG_FILE"
+    apply_manifests
+    wait_for_workloads
+    show_status
+    ;;
+  status)
+    export KUBECONFIG="$KUBECONFIG_FILE"
+    show_status
+    ;;
+  destroy)
+    destroy_cluster
+    ;;
+  build)
+    build_images "${1:-all}"
+    ;;
+  logs)
+    export KUBECONFIG="$KUBECONFIG_FILE"
+    logs_follow "${1:-}"
+    ;;
+  scale)
+    export KUBECONFIG="$KUBECONFIG_FILE"
+    scale_deploy "${1:-}" "${2:-}"
+    ;;
+  health)
+    export KUBECONFIG="$KUBECONFIG_FILE"
+    health_check
+    ;;
+  backup)
+    export KUBECONFIG="$KUBECONFIG_FILE"
+    backup_dbs
+    ;;
+  restore)
+    export KUBECONFIG="$KUBECONFIG_FILE"
+    restore_dbs "${1:-}"
+    ;;
+  *)
+    usage; exit 1 ;;
+esac

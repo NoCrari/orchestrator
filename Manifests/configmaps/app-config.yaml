@@ -4,14 +4,14 @@ metadata:
   name: app-config
   namespace: microservices
 data:
-  INVENTORY_DB_HOST: "inventory-db"
+  # Postgres INVENTORY
+  INVENTORY_DB_HOST: inventory-db.microservices.svc.cluster.local
   INVENTORY_DB_PORT: "5432"
-  INVENTORY_DB_NAME: "inventory"
-  BILLING_DB_HOST: "billing-db"
+
+  # Postgres BILLING
+  BILLING_DB_HOST: billing-db.microservices.svc.cluster.local
   BILLING_DB_PORT: "5432"
-  BILLING_DB_NAME: "billing"
-  RABBITMQ_HOST: "rabbitmq"
+
+  # RabbitMQ
+  RABBITMQ_HOST: rabbitmq.microservices.svc.cluster.local
   RABBITMQ_PORT: "5672"
-  RABBITMQ_QUEUE: "billing_queue"
-  API_GATEWAY_PORT: "3000"
-  APP_PORT: "8080"

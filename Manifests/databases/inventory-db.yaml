@@ -10,7 +10,6 @@ spec:
     - port: 5432
       targetPort: 5432
   clusterIP: None
-
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -29,52 +28,48 @@ spec:
         app: inventory-db
     spec:
       containers:
-      - name: postgres
-        image: postgres:14-alpine
-        ports:
-        - containerPort: 5432
-        env:
-        - name: POSTGRES_USER
-          valueFrom:
-            secretKeyRef:
-              name: db-secrets
-              key: postgres-user
-        - name: POSTGRES_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: db-secrets
-              key: postgres-password
-        - name: POSTGRES_DB
-          value: "inventory"
-        - name: PGDATA
-          value: /var/lib/postgresql/data/pgdata
-        volumeMounts:
-        - name: inventory-storage
-          mountPath: /var/lib/postgresql/data
+        - name: postgres
+          image: postgres:14-alpine
+          ports:
+            - containerPort: 5432
+          args:
+            - "-c"
+            - "listen_addresses=*"
+          env:
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-user } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-password } }
+            - name: POSTGRES_DB
+              value: "inventory"
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: inventory-storage
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests: { cpu: "250m", memory: "256Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+          livenessProbe:
+            exec:
+              command: ["pg_isready","-h","127.0.0.1","-p","5432","-U","postgres"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 6
+          readinessProbe:
+            exec:
+              command: ["pg_isready","-h","127.0.0.1","-p","5432","-U","postgres"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+  volumeClaimTemplates:
+    - metadata:
+        name: inventory-storage
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: local-path
         resources:
           requests:
-            memory: "256Mi"
-            cpu: "250m"
-          limits:
-            memory: "512Mi"
-            cpu: "500m"
-        livenessProbe:
-          exec:
-            command:
-              - pg_isready
-              - -U
-              - postgres
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          exec:
-            command:
-              - pg_isready
-              - -U
-              - postgres
-          initialDelaySeconds: 5
-          periodSeconds: 5
-      volumes:
-      - name: inventory-storage
-        persistentVolumeClaim:
-          claimName: inventory-pvc
+            storage: 5Gi
