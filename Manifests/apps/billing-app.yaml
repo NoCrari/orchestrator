@@ -9,8 +9,7 @@ spec:
   ports:
     - port: 8080
       targetPort: 8080
-  # StatefulSet => service headless
-  clusterIP: None
+  clusterIP: None  # Headless service for StatefulSet
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -31,71 +30,48 @@ spec:
       containers:
         - name: billing-app
           image: nocrarii/billing-app:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
           env:
-            - name: PORT
-              value: "8080"
-            - name: DB_HOST
-              valueFrom: { configMapKeyRef: { name: app-config, key: BILLING_DB_HOST } }
-            - name: DB_PORT
-              valueFrom: { configMapKeyRef: { name: app-config, key: BILLING_DB_PORT } }
-            - name: DB_NAME
-              value: "billing"
-            - name: DB_USER
-              valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-user } }
-            - name: DB_PASSWORD
-              valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-password } }
-
-            # Alias PG*
-            - name: PGHOST
-              valueFrom: { configMapKeyRef: { name: app-config, key: BILLING_DB_HOST } }
-            - name: PGPORT
-              valueFrom: { configMapKeyRef: { name: app-config, key: BILLING_DB_PORT } }
-            - name: PGDATABASE
-              value: "billing"
-            - name: PGUSER
-              valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-user } }
-            - name: PGPASSWORD
-              valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-password } }
-
-            # RabbitMQ
+            - name: BILLING_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: db-secrets
+                  key: postgres-user
+            - name: BILLING_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secrets
+                  key: postgres-password
+            - name: BILLING_DB_NAME
+              value: "orders"
             - name: RABBITMQ_HOST
-              valueFrom: { configMapKeyRef: { name: app-config, key: RABBITMQ_HOST } }
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: RABBITMQ_HOST
             - name: RABBITMQ_PORT
-              valueFrom: { configMapKeyRef: { name: app-config, key: RABBITMQ_PORT } }
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: RABBITMQ_PORT
             - name: RABBITMQ_USER
-              valueFrom: { secretKeyRef: { name: rabbitmq-secrets, key: rabbitmq-user } }
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secrets
+                  key: rabbitmq-user
             - name: RABBITMQ_PASSWORD
-              valueFrom: { secretKeyRef: { name: rabbitmq-secrets, key: rabbitmq-password } }
-            - name: AMQP_URL
-              value: "amqp://$(RABBITMQ_USER):$(RABBITMQ_PASSWORD)@rabbitmq.microservices.svc.cluster.local:5672"
-            - name: RABBITMQ_URL
-              value: "amqp://$(RABBITMQ_USER):$(RABBITMQ_PASSWORD)@rabbitmq.microservices.svc.cluster.local:5672"
-
-          # Démarrage
-          startupProbe:
-            tcpSocket: { port: 8080 }
-            failureThreshold: 30
-            periodSeconds: 5
-
-          # Vivant ?
-          livenessProbe:
-            tcpSocket: { port: 8080 }
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 6
-
-          # PRÊT ? (temporaire: indépendant DB/Rabbit)
-          readinessProbe:
-            tcpSocket: { port: 8080 }
-            initialDelaySeconds: 10
-            periodSeconds: 5
-            timeoutSeconds: 5
-            failureThreshold: 6
-
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secrets
+                  key: rabbitmq-password
+            - name: RABBITMQ_QUEUE
+              value: "billing_queue"
           resources:
-            requests: { cpu: "100m", memory: "128Mi" }
-            limits:   { cpu: "200m", memory: "256Mi" }
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"

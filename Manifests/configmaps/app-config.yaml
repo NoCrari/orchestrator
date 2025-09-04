@@ -4,14 +4,6 @@ metadata:
   name: app-config
   namespace: microservices
 data:
-  # Postgres INVENTORY : pointer le POD de la StatefulSet (réplica 0)
-  INVENTORY_DB_HOST: inventory-db-0.inventory-db.microservices.svc.cluster.local
-  INVENTORY_DB_PORT: "5432"
-
-  # Postgres BILLING : idem, POD 0
-  BILLING_DB_HOST: billing-db-0.billing-db.microservices.svc.cluster.local
-  BILLING_DB_PORT: "5432"
-
-  # RabbitMQ (ClusterIP, non headless)
-  RABBITMQ_HOST: rabbitmq.microservices.svc.cluster.local
+  # RabbitMQ service
+  RABBITMQ_HOST: "rabbitmq.microservices.svc.cluster.local"
   RABBITMQ_PORT: "5672"

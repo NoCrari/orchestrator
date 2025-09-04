@@ -35,26 +35,43 @@ spec:
           image: rabbitmq:3.11-management-alpine
           ports:
             - containerPort: 5672
+              name: amqp
             - containerPort: 15672
+              name: management
           env:
             - name: RABBITMQ_DEFAULT_USER
-              valueFrom: { secretKeyRef: { name: rabbitmq-secrets, key: rabbitmq-user } }
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secrets
+                  key: rabbitmq-user
             - name: RABBITMQ_DEFAULT_PASS
-              valueFrom: { secretKeyRef: { name: rabbitmq-secrets, key: rabbitmq-password } }
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secrets
+                  key: rabbitmq-password
             - name: RABBITMQ_ERLANG_COOKIE
-              valueFrom: { secretKeyRef: { name: rabbitmq-secrets, key: rabbitmq-erlang-cookie } }
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secrets
+                  key: rabbitmq-erlang-cookie
           livenessProbe:
-            tcpSocket: { port: 5672 }
+            tcpSocket:
+              port: 5672
             initialDelaySeconds: 60
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 6
           readinessProbe:
-            tcpSocket: { port: 5672 }
+            tcpSocket:
+              port: 5672
             initialDelaySeconds: 45
             periodSeconds: 5
             timeoutSeconds: 5
             failureThreshold: 6
           resources:
-            requests: { cpu: "100m", memory: "128Mi" }
-            limits:   { cpu: "300m", memory: "256Mi" }
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "300m"
+              memory: "256Mi"

@@ -34,26 +34,38 @@ spec:
           ports:
             - containerPort: 3000
           env:
-            - name: PORT
+            - name: APIGATEWAY_PORT
               value: "3000"
-            - name: INVENTORY_SERVICE_URL
-              value: "http://inventory-app.microservices.svc.cluster.local:8080"
-            - name: BILLING_SERVICE_URL
-              value: "http://billing-app.microservices.svc.cluster.local:8080"
-          startupProbe:
-            tcpSocket: { port: 3000 }
-            failureThreshold: 30
-            periodSeconds: 5
-          livenessProbe:
-            httpGet: { path: /health, port: 3000 }
-            initialDelaySeconds: 30
-            periodSeconds: 10
-            timeoutSeconds: 5
-          readinessProbe:
-            httpGet: { path: /ready, port: 3000 }
-            initialDelaySeconds: 5
-            periodSeconds: 5
-            timeoutSeconds: 5
+            - name: INVENTORY_APP_HOST
+              value: "inventory-app.microservices.svc.cluster.local"
+            - name: INVENTORY_APP_PORT
+              value: "8080"
+            - name: RABBITMQ_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: RABBITMQ_HOST
+            - name: RABBITMQ_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: RABBITMQ_PORT
+            - name: RABBITMQ_USER
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secrets
+                  key: rabbitmq-user
+            - name: RABBITMQ_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: rabbitmq-secrets
+                  key: rabbitmq-password
+            - name: RABBITMQ_QUEUE
+              value: "billing_queue"
           resources:
-            requests: { cpu: "100m", memory: "128Mi" }
-            limits:   { cpu: "200m", memory: "256Mi" }
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"

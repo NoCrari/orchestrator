@@ -26,93 +26,56 @@ spec:
       labels:
         app: inventory-app
     spec:
-      # Attendre que Postgres réponde avant de lancer l'app
       initContainers:
         - name: wait-db
           image: postgres:14-alpine
           env:
-            - name: DB_HOST
-              valueFrom:
-                configMapKeyRef:
-                  name: app-config
-                  key: INVENTORY_DB_HOST
-            - name: DB_PORT
-              valueFrom:
-                configMapKeyRef:
-                  name: app-config
-                  key: INVENTORY_DB_PORT
+            - name: PGHOST
+              value: "inventory-db-0.inventory-db.microservices.svc.cluster.local"
+            - name: PGPORT
+              value: "5432"
             - name: PGUSER
               valueFrom:
                 secretKeyRef:
                   name: db-secrets
                   key: postgres-user
-          command: ["/bin/sh","-lc"]
+          command: ["/bin/sh", "-c"]
           args:
             - |
               set -e
-              echo "Waiting for Postgres at ${DB_HOST}:${DB_PORT} ..."
+              echo "Waiting for Postgres at ${PGHOST}:${PGPORT} ..."
               for i in $(seq 1 60); do
-                if pg_isready -h "${DB_HOST}" -p "${DB_PORT}" -U "${PGUSER}"; then
+                if pg_isready -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}"; then
                   echo "Postgres is ready"; exit 0
                 fi
                 echo "not ready ($i)"; sleep 2
               done
               echo "Postgres not ready after wait"; exit 1
-
       containers:
         - name: inventory-app
           image: nocrarii/inventory-app:latest
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
           env:
-            - name: PORT
+            - name: INVENTORY_APP_PORT
               value: "8080"
-
-            # Variables DB "projet"
-            - name: DB_HOST
-              valueFrom: { configMapKeyRef: { name: app-config, key: INVENTORY_DB_HOST } }
-            - name: DB_PORT
-              valueFrom: { configMapKeyRef: { name: app-config, key: INVENTORY_DB_PORT } }
-            - name: DB_NAME
+            - name: INVENTORY_DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: db-secrets
+                  key: postgres-user
+            - name: INVENTORY_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secrets
+                  key: postgres-password
+            - name: INVENTORY_DB_NAME
               value: "inventory"
-            - name: DB_USER
-              valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-user } }
-            - name: DB_PASSWORD
-              valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-password } }
-
-            # Alias PG* (certains drivers les lisent)
-            - name: PGHOST
-              valueFrom: { configMapKeyRef: { name: app-config, key: INVENTORY_DB_HOST } }
-            - name: PGPORT
-              valueFrom: { configMapKeyRef: { name: app-config, key: INVENTORY_DB_PORT } }
-            - name: PGDATABASE
-              value: "inventory"
-            - name: PGUSER
-              valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-user } }
-            - name: PGPASSWORD
-              valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-password } }
-
-          # Probes: on garde TCP pour éviter les faux négatifs tant que la DB est lente
-          startupProbe:
-            tcpSocket: { port: 8080 }
-            failureThreshold: 30
-            periodSeconds: 5
-
-          livenessProbe:
-            tcpSocket: { port: 8080 }
-            initialDelaySeconds: 10
-            periodSeconds: 10
-            timeoutSeconds: 5
-            failureThreshold: 6
-
-          readinessProbe:
-            tcpSocket: { port: 8080 }
-            initialDelaySeconds: 10
-            periodSeconds: 5
-            timeoutSeconds: 5
-            failureThreshold: 6
-
           resources:
-            requests: { cpu: "100m", memory: "128Mi" }
-            limits:   { cpu: "200m", memory: "256Mi" }
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"

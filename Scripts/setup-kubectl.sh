@@ -1,34 +1,24 @@
-#!/usr/bin/env bash
-# Usage: source Scripts/setup-kubectl.sh
-# Configure kubectl pour utiliser le kubeconfig du repo et le namespace microservices.
+#!/bin/bash
+# Scripts/setup-kubectl.sh
+# Configure kubectl to use K3s cluster
 
-set -euo pipefail
+set -e
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-KUBECONFIG_FILE="$REPO_ROOT/k3s.yaml"
+KUBECONFIG_FILE="$(pwd)/k3s.yaml"
 
-if [[ ! -f "$KUBECONFIG_FILE" ]]; then
-  echo "❌ k3s.yaml introuvable à $KUBECONFIG_FILE"
-  echo "   Lance d'abord: ./orchestrator.sh create"
-  return 1 2>/dev/null || exit 1
+if [ ! -f "$KUBECONFIG_FILE" ]; then
+    echo "❌ k3s.yaml not found. Run './orchestrator.sh create' first"
+    exit 1
 fi
 
 export KUBECONFIG="$KUBECONFIG_FILE"
 
-# Contexte courant (dans k3s il existe déjà)
-ctx="$(kubectl config --kubeconfig "$KUBECONFIG" current-context 2>/dev/null || true)"
-if [[ -z "$ctx" ]]; then
-  ctx="$(kubectl config --kubeconfig "$KUBECONFIG" get-contexts -o name | head -n1)"
-fi
+# Set default namespace to microservices
+kubectl config set-context --current --namespace=microservices
 
-# Fixe le namespace par défaut -> microservices
-if [[ -n "${ctx}" ]]; then
-  kubectl config set-context "$ctx" --kubeconfig "$KUBECONFIG" --namespace="microservices" >/dev/null
-fi
-
+echo "✅ kubectl configured"
 echo "KUBECONFIG=$KUBECONFIG"
-echo "Context: ${ctx:-unknown}"
-echo "Namespace par défaut: microservices"
+echo "Default namespace: microservices"
 
-# Smoke test discret
-kubectl cluster-info >/dev/null 2>&1 && echo "Connexion API OK"
+# Test connection
+kubectl cluster-info --request-timeout=5s >/dev/null 2>&1 && echo "✅ Connection OK" || echo "❌ Connection failed"
