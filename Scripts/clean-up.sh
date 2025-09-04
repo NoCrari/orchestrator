@@ -1,48 +1,29 @@
-#!/bin/bash
-# ===== Scripts/clean-up.sh =====
-# Script to clean up all resources
+#!/usr/bin/env bash
+set -euo pipefail
 
-set -e
+# Usage: ./Scripts/clean-up.sh [namespace]
+NAMESPACE="${1:-microservices}"
 
-# Color codes
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-BLUE='\033[0;34m'
-NC='\033[0m'
+blue(){  printf "\033[1;34m%s\033[0m\n" "$*"; }
+green(){ printf "\033[0;32m%s\033[0m\n" "$*"; }
+yellow(){printf "\033[1;33m%s\033[0m\n" "$*"; }
 
-echo -e "${RED}WARNING: This will delete all resources!${NC}"
-read -p "Are you sure you want to continue? (yes/no): " confirm
-
-if [ "$confirm" != "yes" ]; then
-    echo -e "${YELLOW}Cleanup cancelled${NC}"
-    exit 0
+# Use project kubeconfig if present
+KCFG="$(pwd)/k3s.yaml"
+if [[ -f "$KCFG" ]]; then
+  export KUBECONFIG="$KCFG"
 fi
 
-echo -e "${BLUE}Starting cleanup...${NC}"
+command -v kubectl >/dev/null || { echo "kubectl not found"; exit 1; }
 
-# Delete namespace (this will delete all resources in it)
-echo -e "${YELLOW}Deleting microservices namespace...${NC}"
-kubectl delete namespace microservices --ignore-not-found=true
+blue "Deleting namespace '${NAMESPACE}' if it exists..."
+kubectl delete namespace "$NAMESPACE" --ignore-not-found --wait=true
 
-# Delete persistent volumes
-echo -e "${YELLOW}Deleting persistent volumes...${NC}"
-kubectl delete pv inventory-pv billing-pv --ignore-not-found=true
+# Clean up PVs that were bound to that namespace (local-path can linger)
+yellow "Deleting PersistentVolumes bound to '${NAMESPACE}' (if any)..."
+mapfile -t PVS < <(kubectl get pv -o jsonpath='{range .items[?(@.spec.claimRef.namespace=="'"$NAMESPACE"'")]}{.metadata.name}{"\n"}{end}' || true)
+for pv in "${PVS[@]:-}"; do
+  [[ -n "$pv" ]] && kubectl delete pv "$pv" --wait=false || true
+done
 
-# Stop and destroy Vagrant VMs
-echo -e "${YELLOW}Destroying Vagrant VMs...${NC}"
-vagrant destroy -f
-
-# Clean up Docker images (optional)
-echo -e "${YELLOW}Do you want to remove Docker images? (yes/no): ${NC}"
-read -p "" remove_images
-
-if [ "$remove_images" == "yes" ]; then
-    docker rmi $(docker images | grep -E "api-gateway|inventory-app|billing-app" | awk '{print $3}') 2>/dev/null || true
-    echo -e "${GREEN}✓ Docker images removed${NC}"
-fi
-
-# Clean up temporary files
-rm -f /tmp/k3s-config.yaml /tmp/k3s.yaml /tmp/node-token
-
-echo -e "${GREEN}✓ Cleanup complete${NC}"
+green "Cleanup done."

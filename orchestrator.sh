@@ -169,22 +169,43 @@ deploy_all() {
 }
 
 destroy_cluster() {
-  say "$YELLOW" "Stopping cluster..."
-  
-  # Clean up namespace if cluster is accessible
-  if [ -f "$KUBECONFIG_FILE" ]; then
-    export KUBECONFIG="$KUBECONFIG_FILE"
-    kubectl delete namespace "$NAMESPACE" --ignore-not-found --wait=false 2>/dev/null || true
+  # Nettoyage K8s (si joignable) + destruction des VMs Vagrant + nettoyage fichiers locaux
+  # Simple, idempotent, et sans toucher à ton ~/.kube/config
+
+  echo -e "\033[1;34m[destroy]\033[0m début…"
+
+  # Utiliser le kubeconfig du repo si présent
+  local KCFG="$(pwd)/k3s.yaml"
+  if [[ -f "$KCFG" ]]; then
+    export KUBECONFIG="$KCFG"
   fi
-  
-  # Destroy VMs
-  vagrant destroy -f 2>/dev/null || true
-  
-  # Clean up kubeconfig
-  rm -f "$KUBECONFIG_FILE" 2>/dev/null || true
-  
-  say "$GREEN" "cluster stopped"
+
+  # Si l’API répond, supprimer le namespace et les PV liés
+  if kubectl version --short >/dev/null 2>&1; then
+    echo -e "\033[1;34m[destroy]\033[0m suppression du namespace 'microservices'…"
+    kubectl delete namespace microservices --ignore-not-found --wait=true || true
+
+    echo -e "\033[1;34m[destroy]\033[0m suppression des PersistentVolumes liés (si restants)…"
+    # Supprime les PV dont le claimRef pointe vers le namespace microservices (peut rester si le ns a été forcé)
+    mapfile -t PVS < <(kubectl get pv -o jsonpath='{range .items[?(@.spec.claimRef.namespace=="microservices")]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
+    for pv in "${PVS[@]:-}"; do
+      [[ -n "$pv" ]] && kubectl delete pv "$pv" --wait=false || true
+    done
+  else
+    echo -e "\033[1;33m[destroy]\033[0m cluster injoignable, on saute le cleanup K8s."
+  fi
+
+  # 3) Détruire les VMs Vagrant (cluster K3s)
+  echo -e "\033[1;34m[destroy]\033[0m destruction des VMs Vagrant…"
+  vagrant destroy -f || true
+
+  # 4) Nettoyage local du kubeconfig du repo
+  echo -e "\033[1;34m[destroy]\033[0m nettoyage fichiers locaux…"
+  rm -f "$KCFG" || true
+
+  echo -e "\033[0;32m[destroy]\033[0m terminé."
 }
+
 
 # Main command handling
 case "${1:-}" in
