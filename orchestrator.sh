@@ -36,6 +36,7 @@ EOF
 
 # --- Helpers ---
 say() { echo -e "${1}${2}${NC}"; }
+print_message() { say "$@"; }
 need() { command -v "$1" >/dev/null 2>&1 || { say "$RED" "Manque: $1"; exit 1; }; }
 
 get_node_ip() {
@@ -124,23 +125,61 @@ wait_for_workloads() {
 }
 
 show_status() {
-  say "$BLUE" "=== Cluster Status ==="
-  say "$YELLOW" "Nodes:"; kubectl get nodes
-  echo
-  say "$YELLOW" "Pods in $NAMESPACE:"; kubectl get pods -n "$NAMESPACE"
-  echo
-  say "$YELLOW" "Services in $NAMESPACE:"; kubectl get svc -n "$NAMESPACE"
-  echo
-  say "$YELLOW" "Persistent Volumes:"; kubectl get pv
-  echo
-  say "$YELLOW" "Horizontal Pod Autoscalers:"; kubectl get hpa -n "$NAMESPACE" || true
-  echo
+  print_message "$BLUE" "=== Cluster Status ==="
 
-  local node_ip; node_ip="$(get_node_ip || true)"
-  local node_port; node_port="$(kubectl get svc api-gateway -n "$NAMESPACE" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "30000")"
-  say "$GREEN" "=== Access Information ==="
-  echo "API Gateway URL: http://${node_ip:-<node-ip>}:${node_port}"
-  echo "To get node IP: kubectl get nodes -o wide"
+  print_message "$YELLOW" "Nodes:"
+  kubectl get nodes
+  echo ""
+
+  print_message "$YELLOW" "Pods in $NAMESPACE:"
+  kubectl get pods -n "$NAMESPACE"
+  echo ""
+
+  print_message "$YELLOW" "Services in $NAMESPACE:"
+  kubectl get services -n "$NAMESPACE"
+  echo ""
+
+  print_message "$YELLOW" "Persistent Volumes:"
+  kubectl get pv
+  echo ""
+
+  print_message "$YELLOW" "Horizontal Pod Autoscalers:"
+  kubectl get hpa -n "$NAMESPACE" || true
+  echo ""
+
+  # --- Détermination robuste de l'IP de nœud à utiliser pour le NodePort ---
+  # 1) Essayer le master (label control-plane)
+  local node_ip
+  node_ip="$(kubectl get node -l 'node-role.kubernetes.io/control-plane' \
+    -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || true)"
+
+  # 2) Sinon, label master
+  if [ -z "$node_ip" ]; then
+    node_ip="$(kubectl get node -l 'node-role.kubernetes.io/master' \
+      -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || true)"
+  fi
+
+  # 3) Sinon, préférer une IP du réseau host-only Vagrant (192.168.56.*)
+  if [ -z "$node_ip" ]; then
+    node_ip="$(kubectl get nodes -o wide 2>/dev/null | awk '/Ready/ && $0 ~ /192\\.168\\.56\\./ {print $6; exit}')" || true
+  fi
+
+  # 4) Sinon, n'importe quelle InternalIP prête (éviter les 10.0.2.* NAT si possible)
+  if [ -z "$node_ip" ]; then
+    node_ip="$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || true)"
+  fi
+
+  # NodePort de l’API Gateway
+  local node_port
+  node_port="$(kubectl get svc api-gateway -n "$NAMESPACE" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || true)"
+
+  print_message "$GREEN" "=== Access Information ==="
+  if [ -n "$node_ip" ] && [ -n "$node_port" ]; then
+    print_message "$YELLOW" "API Gateway URL: http://$node_ip:$node_port"
+  else
+    print_message "$YELLOW" "API Gateway URL: http://<node-ip>:<node-port>"
+  fi
+  print_message "$YELLOW" "To get node IP: kubectl get nodes -o wide"
 }
 
 create_cluster() {

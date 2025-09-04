@@ -1,53 +1,34 @@
-#!/bin/bash
-# ===== Scripts/setup-kubectl.sh =====
-# Script to configure kubectl for the K3s cluster
+#!/usr/bin/env bash
+# Usage: source Scripts/setup-kubectl.sh
+# Configure kubectl pour utiliser le kubeconfig du repo et le namespace microservices.
 
-set -e
+set -euo pipefail
 
-# Color codes
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-RED='\033[0;31m'
-NC='\033[0m'
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+KUBECONFIG_FILE="$REPO_ROOT/k3s.yaml"
 
-echo -e "${YELLOW}Setting up kubectl configuration...${NC}"
-
-# Check if vagrant is running
-if ! vagrant status master | grep -q "running"; then
-    echo -e "${RED}Master node is not running. Please run './orchestrator.sh create' first${NC}"
-    exit 1
+if [[ ! -f "$KUBECONFIG_FILE" ]]; then
+  echo "❌ k3s.yaml introuvable à $KUBECONFIG_FILE"
+  echo "   Lance d'abord: ./orchestrator.sh create"
+  return 1 2>/dev/null || exit 1
 fi
 
-# Get kubeconfig from master
-echo -e "${YELLOW}Fetching kubeconfig from master node...${NC}"
-vagrant ssh master -c "sudo cat /etc/rancher/k3s/k3s.yaml" > /tmp/k3s-config.yaml
+export KUBECONFIG="$KUBECONFIG_FILE"
 
-# Get master IP
-MASTER_IP=$(vagrant ssh master -c "hostname -I | awk '{print \$1}'" | tr -d '\r')
-echo -e "${YELLOW}Master IP: ${MASTER_IP}${NC}"
-
-# Update the server address in kubeconfig
-sed -i "s/127.0.0.1/${MASTER_IP}/g" /tmp/k3s-config.yaml
-
-# Backup existing kubeconfig if it exists
-if [ -f "$HOME/.kube/config" ]; then
-    cp "$HOME/.kube/config" "$HOME/.kube/config.backup-$(date +%Y%m%d-%H%M%S)"
-    echo -e "${YELLOW}Existing kubeconfig backed up${NC}"
+# Contexte courant (dans k3s il existe déjà)
+ctx="$(kubectl config --kubeconfig "$KUBECONFIG" current-context 2>/dev/null || true)"
+if [[ -z "$ctx" ]]; then
+  ctx="$(kubectl config --kubeconfig "$KUBECONFIG" get-contexts -o name | head -n1)"
 fi
 
-# Create .kube directory if it doesn't exist
-mkdir -p "$HOME/.kube"
-
-# Copy the new config
-cp /tmp/k3s-config.yaml "$HOME/.kube/config"
-chmod 600 "$HOME/.kube/config"
-
-# Test the connection
-if kubectl get nodes &>/dev/null; then
-    echo -e "${GREEN}✓ kubectl configured successfully${NC}"
-    echo ""
-    kubectl get nodes
-else
-    echo -e "${RED}✗ Failed to configure kubectl${NC}"
-    exit 1
+# Fixe le namespace par défaut -> microservices
+if [[ -n "${ctx}" ]]; then
+  kubectl config set-context "$ctx" --kubeconfig "$KUBECONFIG" --namespace="microservices" >/dev/null
 fi
+
+echo "KUBECONFIG=$KUBECONFIG"
+echo "Context: ${ctx:-unknown}"
+echo "Namespace par défaut: microservices"
+
+# Smoke test discret
+kubectl cluster-info >/dev/null 2>&1 && echo "Connexion API OK"
