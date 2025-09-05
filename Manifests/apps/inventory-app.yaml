@@ -7,7 +7,8 @@ spec:
   selector:
     app: inventory-app
   ports:
-    - port: 8080
+    - name: http
+      port: 8080
       targetPort: 8080
   type: ClusterIP
 ---
@@ -26,37 +27,28 @@ spec:
       labels:
         app: inventory-app
     spec:
-      initContainers:
-        - name: wait-db
-          image: postgres:14-alpine
-          env:
-            - name: PGHOST
-              value: "inventory-db-0.inventory-db.microservices.svc.cluster.local"
-            - name: PGPORT
-              value: "5432"
-            - name: PGUSER
-              valueFrom:
-                secretKeyRef:
-                  name: db-secrets
-                  key: postgres-user
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-              set -e
-              echo "Waiting for Postgres at ${PGHOST}:${PGPORT} ..."
-              for i in $(seq 1 60); do
-                if pg_isready -h "${PGHOST}" -p "${PGPORT}" -U "${PGUSER}"; then
-                  echo "Postgres is ready"; exit 0
-                fi
-                echo "not ready ($i)"; sleep 2
-              done
-              echo "Postgres not ready after wait"; exit 1
       containers:
         - name: inventory-app
-          image: nocrarii/inventory-app:latest
+          image: nocrarii/inventory-app:v4
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 6
           env:
             - name: INVENTORY_APP_PORT
               value: "8080"

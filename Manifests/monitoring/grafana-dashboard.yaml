@@ -1,0 +1,61 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-microservices
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+data:
+  microservices-dashboard.json: |
+    {
+      "annotations": {"list": []},
+      "editable": true,
+      "gnetId": null,
+      "graphTooltip": 0,
+      "id": null,
+      "links": [],
+      "panels": [
+        {
+          "type": "timeseries",
+          "title": "API Gateway - Requests rate",
+          "targets": [
+            {"expr": "sum by (service) (rate(http_requests_total{namespace=\"microservices\",service=\"api-gateway\"}[5m]))"}
+          ],
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0}
+        },
+        {
+          "type": "timeseries",
+          "title": "Inventory - Requests rate",
+          "targets": [
+            {"expr": "sum by (service) (rate(inventory_http_requests_total{namespace=\"microservices\",service=\"inventory-app\"}[5m]))"}
+          ],
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0}
+        },
+        {
+          "type": "timeseries",
+          "title": "API Gateway - P95 latency (s)",
+          "targets": [
+            {"expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace=\"microservices\",service=\"api-gateway\"}[5m])))"}
+          ],
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8}
+        },
+        {
+          "type": "timeseries",
+          "title": "Inventory - P95 latency (s)",
+          "targets": [
+            {"expr": "histogram_quantile(0.95, sum by (le) (rate(inventory_http_request_duration_seconds_bucket{namespace=\"microservices\",service=\"inventory-app\"}[5m])))"}
+          ],
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8}
+        }
+      ],
+      "schemaVersion": 37,
+      "style": "dark",
+      "tags": ["microservices", "prometheus"],
+      "templating": {"list": []},
+      "time": {"from": "now-6h", "to": "now"},
+      "timepicker": {},
+      "timezone": "browser",
+      "title": "Microservices Overview",
+      "version": 1
+    }
+

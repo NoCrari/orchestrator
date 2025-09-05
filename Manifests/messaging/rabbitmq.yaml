@@ -49,11 +49,6 @@ spec:
                 secretKeyRef:
                   name: rabbitmq-secrets
                   key: rabbitmq-password
-            - name: RABBITMQ_ERLANG_COOKIE
-              valueFrom:
-                secretKeyRef:
-                  name: rabbitmq-secrets
-                  key: rabbitmq-erlang-cookie
           livenessProbe:
             tcpSocket:
               port: 5672

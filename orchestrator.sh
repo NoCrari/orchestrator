@@ -18,7 +18,7 @@ NC='\033[0m'
 
 usage() {
   cat <<EOF
-Usage: $0 {create|start|stop|deploy|status|logs|debug}
+Usage: $0 {create|start|stop|deploy|status|logs|debug|build}
 Commands:
   create    Create the K3s cluster and deploy applications
   start     Same as create (for audit compatibility)
@@ -27,6 +27,7 @@ Commands:
   status    Show cluster status
   logs      Show logs of all pods
   debug     Run diagnostic checks
+  build     Build and optionally push images; bump tags in manifests
 EOF
 }
 
@@ -110,16 +111,40 @@ apply_manifests() {
   say "$BLUE" "Applying manifests..."
   
   # Apply in dependency order with error handling
-  local manifest_dirs=("secrets" "configmaps" "databases" "messaging" "apps" "autoscaling")
+  local manifest_dirs=("secrets" "configmaps" "databases" "messaging" "apps" "autoscaling" "monitoring")
   
   for dir in "${manifest_dirs[@]}"; do
     local manifest_path="Manifests/${dir}"
     if [ -d "$manifest_path" ]; then
       say "$YELLOW" "→ Applying $dir"
-      kubectl apply -n "$NAMESPACE" -f "$manifest_path/" || {
-        say "$RED" "Failed to apply $dir manifests"
-        return 1
-      }
+      if [[ "$dir" == "monitoring" ]]; then
+        # Special handling: some files target other namespaces or CRDs that may not exist yet
+        # 1) Ensure monitoring namespace exists (for Grafana dashboard CM)
+        kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f - || true
+
+        # 2) Apply ServiceMonitors only if CRD is installed
+        if kubectl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1; then
+          if [ -f "$manifest_path/servicemonitors.yaml" ]; then
+            kubectl apply -f "$manifest_path/servicemonitors.yaml" || {
+              say "$YELLOW" "ServiceMonitors apply failed; continuing"
+            }
+          fi
+        else
+          say "$YELLOW" "CRD ServiceMonitor absent: skipping servicemonitors (run Scripts/install-prometheus-operator.sh)"
+        fi
+
+        # 3) Apply any other monitoring objects without forcing namespace
+        if [ -f "$manifest_path/grafana-dashboard.yaml" ]; then
+          kubectl apply -f "$manifest_path/grafana-dashboard.yaml" || {
+            say "$YELLOW" "grafana-dashboard apply failed; continuing"
+          }
+        fi
+      else
+        kubectl apply -n "$NAMESPACE" -f "$manifest_path/" || {
+          say "$RED" "Failed to apply $dir manifests"
+          return 1
+        }
+      fi
       sleep 2  # Small delay between manifest groups
     else
       say "$YELLOW" "⚠ Directory $manifest_path not found, skipping"
@@ -210,6 +235,62 @@ show_status() {
   
   echo ""
   say "$BLUE" "Ready for audit tests!"
+}
+
+# ==============================
+# Build and Tag Images
+# ==============================
+
+update_manifest_image() {
+  local file="$1" name="$2" tag="$3" user="$4"
+  # Replace image line for given app
+  sed -i -E "s|(image:\s*)${user}/${name}:[a-zA-Z0-9._-]+|\\1${user}/${name}:${tag}|" "$file"
+}
+
+build_images() {
+  local TAG="${1:-}"
+  local PUSH="${2:-}"
+  local USERNAME="${DOCKER_HUB_USERNAME:-nocrarii}"
+
+  if [[ -z "$TAG" ]]; then
+    TAG="v$(date +%Y%m%d%H%M)"
+  fi
+  say "$BLUE" "Building images with tag: $TAG (user: $USERNAME)"
+
+  local ROOT_DIR
+  ROOT_DIR="$(pwd)"
+
+  # Build contexts
+  declare -A MAP=(
+    [api-gateway]="Dockerfiles/api-gateway-app"
+    [inventory-app]="Dockerfiles/inventory-app"
+    [billing-app]="Dockerfiles/billing-app"
+    [inventory-db]="Dockerfiles/inventory-db"
+    [billing-db]="Dockerfiles/billing-db"
+    [rabbitmq]="Dockerfiles/rabbitmq"
+  )
+
+  for name in "${!MAP[@]}"; do
+    local ctx="${MAP[$name]}"
+    local image="${USERNAME}/${name}:${TAG}"
+    say "$YELLOW" "→ Building $image from $ctx"
+    docker build -t "$image" "$ctx"
+    if [[ "$PUSH" == "--push" || "$PUSH" == "push" ]]; then
+      say "$YELLOW" "→ Pushing $image"
+      docker push "$image"
+    fi
+  done
+
+  # Bump image tags in manifests
+  say "$YELLOW" "→ Updating manifests with new tags"
+  update_manifest_image "Manifests/apps/api-gateway.yaml" "api-gateway" "$TAG" "$USERNAME"
+  update_manifest_image "Manifests/apps/inventory-app.yaml" "inventory-app" "$TAG" "$USERNAME"
+  update_manifest_image "Manifests/apps/billing-app.yaml" "billing-app" "$TAG" "$USERNAME"
+  update_manifest_image "Manifests/databases/inventory-db.yaml" "inventory-db" "$TAG" "$USERNAME"
+  update_manifest_image "Manifests/databases/billing-db.yaml" "billing-db" "$TAG" "$USERNAME"
+  update_manifest_image "Manifests/messaging/rabbitmq.yaml" "rabbitmq" "$TAG" "$USERNAME"
+
+  say "$GREEN" "✓ Build complete. Manifests updated to tag $TAG"
 }
 
 create_cluster() {
@@ -355,6 +436,10 @@ case "${1:-}" in
     ;;
   debug)
     run_debug
+    ;;
+  build)
+    # Usage: ./orchestrator.sh build [TAG] [--push]
+    build_images "${2:-}" "${3:-}"
     ;;
   *)
     usage

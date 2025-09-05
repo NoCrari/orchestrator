@@ -29,7 +29,7 @@ spec:
     spec:
       containers:
         - name: billing-app
-          image: nocrarii/billing-app:latest
+          image: nocrarii/billing-app:v4
           imagePullPolicy: Always
           ports:
             - containerPort: 8080
@@ -45,7 +45,7 @@ spec:
                   name: db-secrets
                   key: postgres-password
             - name: BILLING_DB_NAME
-              value: "orders"
+              value: "billing"
             - name: RABBITMQ_HOST
               valueFrom:
                 configMapKeyRef:

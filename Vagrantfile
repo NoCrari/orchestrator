@@ -49,11 +49,17 @@ Vagrant.configure("2") do |config|
       apt-get update
       apt-get install -y curl wget software-properties-common apt-transport-https ca-certificates
       
+      # Detect private iface for the given MASTER_IP (fallback to eth1)
+      IFACE=$(ip -o -4 addr show | grep '#{MASTER_IP}/' | awk '{print $2}' || true)
+      [ -z "$IFACE" ] && IFACE=eth1
+      echo "Using flannel interface on master: $IFACE"
+
       # Install K3s server
       export INSTALL_K3S_VERSION="#{K3S_VERSION}"
       export K3S_KUBECONFIG_MODE="644"
       export K3S_NODE_IP="#{MASTER_IP}"
-      export INSTALL_K3S_EXEC="server --disable traefik --bind-address=#{MASTER_IP} --advertise-address=#{MASTER_IP} --node-ip=#{MASTER_IP}"
+      # Force flannel to use the detected private interface to ensure cross-node pod networking
+      export INSTALL_K3S_EXEC="server --disable traefik --bind-address=#{MASTER_IP} --advertise-address=#{MASTER_IP} --node-ip=#{MASTER_IP} --flannel-iface=$IFACE"
       
       curl -sfL https://get.k3s.io | sh -
       
@@ -61,8 +67,8 @@ Vagrant.configure("2") do |config|
       echo "Waiting for K3s to start..."
       sleep 30
       
-      # Wait for node to be ready
-      until kubectl get nodes | grep -q "Ready"; do
+      # Wait for node to be ready (use bundled k3s kubectl to avoid KUBECONFIG issues)
+      until k3s kubectl get nodes | grep -q " Ready "; do
         echo "Waiting for master node to be ready..."
         sleep 5
       done
@@ -83,7 +89,7 @@ Vagrant.configure("2") do |config|
       
       echo "=== Master node ready ==="
       echo "Token saved to #{TOKEN_FILE}"
-      kubectl get nodes
+      k3s kubectl get nodes -o wide
     SHELL
   end
   
@@ -121,12 +127,19 @@ Vagrant.configure("2") do |config|
       TOKEN=$(cat #{TOKEN_FILE})
       echo "Token found!"
       
+      # Detect private iface for the given AGENT_IP (fallback to eth1)
+      IFACE=$(ip -o -4 addr show | grep '#{AGENT_IP}/' | awk '{print $2}' || true)
+      [ -z "$IFACE" ] && IFACE=eth1
+      echo "Using flannel interface on agent: $IFACE"
+
       # Install K3s agent
       export INSTALL_K3S_VERSION="#{K3S_VERSION}"
       export K3S_URL="https://#{MASTER_IP}:6443"
       export K3S_TOKEN=$TOKEN
       export K3S_NODE_IP="#{AGENT_IP}"
-      
+      # Force flannel to use the detected private interface
+      export INSTALL_K3S_EXEC="agent --node-ip=#{AGENT_IP} --flannel-iface=$IFACE"
+
       curl -sfL https://get.k3s.io | sh -
       
       # Configure firewall

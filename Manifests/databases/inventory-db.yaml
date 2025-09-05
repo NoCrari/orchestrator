@@ -29,18 +29,11 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: nocrarii/postgres-db:latest
-          imagePullPolicy: Always
+          image: nocrarii/inventory-db:v4
+          imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5432
           env:
-            # Compatibilité: on fournit DB_* ET POSTGRES_*
-            - name: DB_USER
-              valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-user } }
-            - name: DB_PASSWORD
-              valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-password } }
-            - name: DB_NAME
-              value: "inventory"
             - name: POSTGRES_USER
               valueFrom: { secretKeyRef: { name: db-secrets, key: postgres-user } }
             - name: POSTGRES_PASSWORD

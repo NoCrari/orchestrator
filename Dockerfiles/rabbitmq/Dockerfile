@@ -5,7 +5,7 @@ RUN apt-get update && \
 
 RUN rabbitmq-plugins enable rabbitmq_management
 
-EXPOSE 5672 15627
+EXPOSE 5672 15672
 
 COPY tools/setup_rq.sh /tmp/setup_rq.sh
 

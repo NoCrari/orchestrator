@@ -1,0 +1,37 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: api-gateway-sm
+  namespace: microservices
+  labels:
+    app: api-gateway
+spec:
+  selector:
+    matchLabels:
+      app: api-gateway
+  namespaceSelector:
+    matchNames: ["microservices"]
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scheme: http
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: inventory-app-sm
+  namespace: microservices
+  labels:
+    app: inventory-app
+spec:
+  selector:
+    matchLabels:
+      app: inventory-app
+  namespaceSelector:
+    matchNames: ["microservices"]
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+      scheme: http

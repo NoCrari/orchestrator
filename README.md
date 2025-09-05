@@ -100,6 +100,12 @@ Client → API Gateway (30000) → ┬→ Inventory Service (8080) → PostgreSQ
 - `docker.io/nocrarii/api-gateway:latest` - [Voir sur Docker Hub](https://hub.docker.com/r/nocrarii/api-gateway)
 - `docker.io/nocrarii/inventory-app:latest` - [Voir sur Docker Hub](https://hub.docker.com/r/nocrarii/inventory-app)
 - `docker.io/nocrarii/billing-app:latest` - [Voir sur Docker Hub](https://hub.docker.com/r/nocrarii/billing-app)
+- `docker.io/nocrarii/inventory-db:latest` - [Voir sur Docker Hub](https://hub.docker.com/r/nocrarii/inventory-db)
+  - Utilisé par: `inventory-db` (StatefulSet)
+- `docker.io/nocrarii/billing-db:latest` - [Voir sur Docker Hub](https://hub.docker.com/r/nocrarii/billing-db)
+  - Utilisé par: `billing-db` (StatefulSet)
+- `docker.io/nocrarii/rabbitmq:latest` - [Voir sur Docker Hub](https://hub.docker.com/r/nocrarii/rabbitmq)
+  - Utilisé par: `rabbitmq` (Deployment)
 
 ## 📚 Prérequis
 
@@ -131,12 +137,22 @@ export DOCKER_HUB_USERNAME="nocrarii"
 ### 1️⃣ Construction et Push des Images Docker
 
 ```bash
-# Build et push toutes les images sur Docker Hub
-./orchestrator.sh build all
+# Optionnel: définir votre compte Docker Hub
+export DOCKER_HUB_USERNAME="nocrarii"   # ou votre username
+docker login
 
-# Vérification des images
-docker images | grep nocrarii
+# Build des images avec un tag (par défaut vYYYYMMDDHHMM)
+./orchestrator.sh build                 # ex: tag auto
+./orchestrator.sh build v1              # ex: tag explicite
+
+# Build + push vers Docker Hub
+./orchestrator.sh build v1 --push
+
+# Vérifier les images locales
+docker images | grep ${DOCKER_HUB_USERNAME:-nocrarii}
 ```
+
+Le build crée et tague les images `api-gateway`, `inventory-app` et `billing-app`, puis met automatiquement à jour les manifests Kubernetes pour pointer vers le nouveau tag.
 
 ### 2️⃣ Création du Cluster K3s
 
@@ -179,7 +195,7 @@ kubectl get nodes -A
 # Commandes supplémentaires utiles
 ./orchestrator.sh status   # État complet du cluster
 ./orchestrator.sh deploy   # Redéploiement des manifests
-./orchestrator.sh build    # Build et push Docker
+./orchestrator.sh build    # Build des images (+ option --push)
 ./orchestrator.sh logs <service>  # Voir les logs
 ./orchestrator.sh health   # Health check rapide
 ```
@@ -234,6 +250,15 @@ kubectl get nodes -A
 - **Type** : Deployment
 - **Ports** : 5672 (AMQP), 15672 (Management UI)
 - **Image** : rabbitmq:3.11-management-alpine
+
+### Accès à l'UI RabbitMQ
+- Par défaut, le Service est en `ClusterIP` (interne). Pour ouvrir l'UI de management:
+  - Port‑forward éphémère: `kubectl -n microservices port-forward svc/rabbitmq 15672:15672`
+  - Navigateur: `http://localhost:15672`
+  - Identifiants depuis le Secret: `admin / rabbitmq123` (ou lire le secret `rabbitmq-secrets`)
+  - Option NodePort (debug réseau):
+    - `kubectl -n microservices patch svc rabbitmq -p '{"spec":{"type":"NodePort","ports":[{"name":"amqp","port":5672,"targetPort":5672,"nodePort":30672},{"name":"management","port":15672,"targetPort":15672,"nodePort":31672}]}}'`
+    - Accès: `http://<NODE_IP>:31672`
 
 ### autoscaling/*.yaml
 - **Type** : HorizontalPodAutoscaler
@@ -505,6 +530,27 @@ vagrant ssh agent
 sudo systemctl status k3s-agent
 sudo journalctl -u k3s-agent -f
 ```
+
+## 📈 Observabilité (Prometheus/Grafana)
+
+- Endpoints `/metrics` exposés par: `api-gateway` et `inventory-app` (Prometheus client Python).
+- ServiceMonitors: `Manifests/monitoring/servicemonitors.yaml` (scrape chemin `/metrics` sur port nommé `http`).
+- Installer Prometheus Operator + stack kube-prometheus:
+  ```bash
+  bash Scripts/install-prometheus-operator.sh
+  kubectl get crd | grep monitoring.coreos.com
+  kubectl -n monitoring get pods,svc
+  ```
+- Dashboard Grafana prêt à l’emploi: `Manifests/monitoring/grafana-dashboard.yaml` (label `grafana_dashboard: "1"`).
+
+## 🔧 Détails du Workflow de Build
+
+- Prérequis: `docker login` et `export DOCKER_HUB_USERNAME="<vous>"` (défaut: `nocrarii`).
+- Construire et tagger: `./orchestrator.sh build [TAG]` (tag auto par défaut).
+- Pousser: `./orchestrator.sh build <TAG> --push`.
+- Construit: `api-gateway`, `inventory-app`, `billing-app`, `postgres-db`, `rabbitmq`.
+- Effet: met à jour `Manifests/apps/*.yaml`, `Manifests/databases/*-db.yaml`, `Manifests/messaging/rabbitmq.yaml` pour pointer sur `<TAG>`; ensuite `./orchestrator.sh deploy` pour appliquer.
+- Script autonome équivalent: `./Scripts/build-images.sh <TAG> [--push]`.
 
 ## 🎁 Bonus Implémentés
 
