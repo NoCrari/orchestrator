@@ -1,31 +1,49 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-#check if database already configured
-if [ ! -d "/var/lib/postgresql/13/main/" ]; then
+# Compatibilité: lire DB_* ou POSTGRES_* et définir les POSTGRES_* attendues par nos commandes
+: "${POSTGRES_USER:=${DB_USER:-postgres}}"
+: "${POSTGRES_PASSWORD:=${DB_PASSWORD:-postgres}}"
+: "${POSTGRES_DB:=${DB_NAME:-postgres}}"
+: "${PGDATA:=/var/lib/postgresql/data}"
 
-    mkdir -p /var/lib/postgresql/13/main
+export PATH="/usr/lib/postgresql/13/bin:$PATH"
 
-    # Init the database
-    /usr/lib/postgresql/13/bin/initdb -D /var/lib/postgresql/13/main/
+echo "[postgres-db] Using:"
+echo "  PGDATA=$PGDATA"
+echo "  POSTGRES_USER=$POSTGRES_USER"
+echo "  POSTGRES_DB=$POSTGRES_DB"
 
-    #Start postgresql
-    /etc/init.d/postgresql start
+# Initialisation si première exécution
+if [[ ! -s "$PGDATA/PG_VERSION" ]]; then
+  echo "[postgres-db] initdb…"
+  install -d -m 0700 -o postgres -g postgres "$PGDATA"
 
-    # Enable the PostgreSQL public access
-    psql --command "ALTER USER postgres WITH PASSWORD '${DB_PASSWORD}';"
+  # initdb avec mot de passe (non interactif) et scram-sha-256
+  pwfile="$(mktemp)"
+  printf "%s" "$POSTGRES_PASSWORD" > "$pwfile"
+  initdb -D "$PGDATA" -U "$POSTGRES_USER" -A scram-sha-256 --pwfile="$pwfile"
+  rm -f "$pwfile"
 
-    # Create a new user and database
-    psql --command "CREATE USER ${DB_USER} WITH SUPERUSER PASSWORD '${DB_PASSWORD}';" &&\
-    createdb -O ${DB_USER} ${DB_NAME}
+  # Écoute réseau
+  echo "listen_addresses = '*'" >> "$PGDATA/postgresql.conf"
 
-    # Enable public access
-    echo "listen_addresses='*'" >> /var/lib/postgresql/13/main/postgresql.conf
+  # Auth: autoriser md5/scram pour tout le cluster (contexte labo)
+  echo "host all all 0.0.0.0/0 scram-sha-256" >> "$PGDATA/pg_hba.conf"
+  echo "host all all ::/0      scram-sha-256" >> "$PGDATA/pg_hba.conf"
 
-    # Enable public access
-    echo "host  all  all 0.0.0.0/0 md5" >> /var/lib/postgresql/13/main/pg_hba.conf
+  # Démarrer temporairement pour créer la BDD si besoin
+  pg_ctl -D "$PGDATA" -o "-c listen_addresses='localhost'" -w start
+
+  if [[ "$POSTGRES_DB" != "postgres" ]]; then
+    echo "[postgres-db] creating database '$POSTGRES_DB' owned by '$POSTGRES_USER'…"
+    createdb -O "$POSTGRES_USER" "$POSTGRES_DB" || true
+  fi
+
+  # Arrêt propre du bootstrap
+  pg_ctl -D "$PGDATA" -m fast -w stop
 fi
 
-/etc/init.d/postgresql stop
-
-# Start PostgreSQL
-/usr/lib/postgresql/13/bin/postgres -D /var/lib/postgresql/13/main
+echo "[postgres-db] starting postgres…"
+# Premier plan: c'est le process PID 1
+exec postgres -D "$PGDATA" -c listen_addresses='*'

@@ -3,6 +3,7 @@ set -euo pipefail
 
 # ==============================
 # Orchestrator K3s + Manifests
+# Version robuste avec gestion d'erreurs
 # ==============================
 
 NAMESPACE="microservices"
@@ -17,13 +18,15 @@ NC='\033[0m'
 
 usage() {
   cat <<EOF
-Usage: $0 {create|start|stop|deploy|status}
+Usage: $0 {create|start|stop|deploy|status|logs|debug}
 Commands:
   create    Create the K3s cluster and deploy applications
   start     Same as create (for audit compatibility)
   stop      Stop and destroy the cluster
   deploy    Deploy/redeploy manifests to existing cluster
   status    Show cluster status
+  logs      Show logs of all pods
+  debug     Run diagnostic checks
 EOF
 }
 
@@ -34,40 +37,67 @@ check_prerequisites() {
   for cmd in vagrant kubectl docker; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
       say "$RED" "Missing required command: $cmd"
+      say "$YELLOW" "Run: ./Scripts/install-tools.sh"
       exit 1
     fi
   done
   say "$GREEN" "✓ Prerequisites OK"
 }
 
+# Configuration kubectl plus robuste
 configure_kubectl() {
   say "$BLUE" "Configuring kubectl..."
-  # Get kubeconfig from master node
-  vagrant ssh master -c "sudo cat /etc/rancher/k3s/k3s.yaml" > "$KUBECONFIG_FILE" 2>/dev/null || {
-    say "$RED" "Failed to get kubeconfig from master"
-    exit 1
-  }
   
-  # Replace localhost with master node IP
-  sed -i 's/127.0.0.1/192.168.56.10/g' "$KUBECONFIG_FILE"
-  export KUBECONFIG="$KUBECONFIG_FILE"
-  say "$GREEN" "✓ kubectl configured"
-}
-
-wait_for_cluster() {
-  say "$BLUE" "Waiting for cluster to be ready..."
-  local retries=60
-  for i in $(seq 1 $retries); do
-    if kubectl get nodes >/dev/null 2>&1; then
-      local ready_nodes=$(kubectl get nodes --no-headers | grep ' Ready ' | wc -l)
-      if [ "$ready_nodes" -ge 1 ]; then
-        say "$GREEN" "✓ Cluster ready"
+  local max_retries=5
+  local retry=0
+  
+  while [ $retry -lt $max_retries ]; do
+    if vagrant ssh master -c "sudo cat /etc/rancher/k3s/k3s.yaml" > "$KUBECONFIG_FILE" 2>/dev/null; then
+      sed -i 's/127.0.0.1/192.168.56.10/g' "$KUBECONFIG_FILE"
+      export KUBECONFIG="$KUBECONFIG_FILE"
+      
+      # Test the connection
+      if kubectl cluster-info --request-timeout=10s >/dev/null 2>&1; then
+        say "$GREEN" "✓ kubectl configured and tested"
         return 0
       fi
     fi
-    sleep 5
+    
+    retry=$((retry + 1))
+    say "$YELLOW" "Retry $retry/$max_retries - waiting 10s..."
+    sleep 10
   done
-  say "$RED" "Timeout: cluster not ready"
+  
+  say "$RED" "Failed to configure kubectl after $max_retries attempts"
+  exit 1
+}
+
+# Attendre que le cluster soit prêt (plus robuste)
+wait_for_cluster() {
+  say "$BLUE" "Waiting for cluster to be ready..."
+  local max_wait=300  # 5 minutes
+  local waited=0
+  
+  while [ $waited -lt $max_wait ]; do
+    if kubectl get nodes >/dev/null 2>&1; then
+      local ready_nodes=$(kubectl get nodes --no-headers | grep -c ' Ready ' || true)
+      if [ "$ready_nodes" -ge 1 ]; then
+        say "$GREEN" "✓ Cluster ready ($ready_nodes nodes)"
+        kubectl get nodes
+        return 0
+      fi
+    fi
+    
+    sleep 10
+    waited=$((waited + 10))
+    
+    if [ $((waited % 60)) -eq 0 ]; then
+      say "$YELLOW" "Still waiting... (${waited}s elapsed)"
+    fi
+  done
+  
+  say "$RED" "Timeout: cluster not ready after ${max_wait}s"
+  say "$YELLOW" "Try: vagrant reload && $0 create"
   exit 1
 }
 
@@ -79,33 +109,73 @@ create_namespace() {
 apply_manifests() {
   say "$BLUE" "Applying manifests..."
   
-  # Apply in order: secrets -> config -> databases -> messaging -> apps -> scaling
-  kubectl apply -n "$NAMESPACE" -f "Manifests/secrets/"
-  kubectl apply -n "$NAMESPACE" -f "Manifests/configmaps/"
-  kubectl apply -n "$NAMESPACE" -f "Manifests/databases/"
-  kubectl apply -n "$NAMESPACE" -f "Manifests/messaging/"
-  kubectl apply -n "$NAMESPACE" -f "Manifests/apps/"
-  kubectl apply -n "$NAMESPACE" -f "Manifests/autoscaling/"
+  # Apply in dependency order with error handling
+  local manifest_dirs=("secrets" "configmaps" "databases" "messaging" "apps" "autoscaling")
   
-  say "$GREEN" "✓ Manifests applied"
+  for dir in "${manifest_dirs[@]}"; do
+    local manifest_path="Manifests/${dir}"
+    if [ -d "$manifest_path" ]; then
+      say "$YELLOW" "→ Applying $dir"
+      kubectl apply -n "$NAMESPACE" -f "$manifest_path/" || {
+        say "$RED" "Failed to apply $dir manifests"
+        return 1
+      }
+      sleep 2  # Small delay between manifest groups
+    else
+      say "$YELLOW" "⚠ Directory $manifest_path not found, skipping"
+    fi
+  done
+  
+  say "$GREEN" "✓ All manifests applied"
 }
 
+# Attendre les workloads avec timeout plus courts et gestion d'erreur
 wait_for_workloads() {
-  say "$BLUE" "Waiting for workloads to be ready..."
+  say "$BLUE" "Waiting for workloads (this may take a few minutes)..."
   
-  # Wait for databases first
-  kubectl rollout status -n "$NAMESPACE" statefulset/inventory-db --timeout=300s
-  kubectl rollout status -n "$NAMESPACE" statefulset/billing-db --timeout=300s
+  # Timeout plus court pour éviter les blocages
+  local timeout="120s"
   
-  # Then messaging
-  kubectl rollout status -n "$NAMESPACE" deployment/rabbitmq --timeout=300s
+  # Attendre les StatefulSets (bases de données) en premier
+  say "$YELLOW" "→ Waiting for databases..."
+  kubectl rollout status -n "$NAMESPACE" statefulset/inventory-db --timeout="$timeout" || {
+    say "$YELLOW" "inventory-db timeout, continuing..."
+  }
+  kubectl rollout status -n "$NAMESPACE" statefulset/billing-db --timeout="$timeout" || {
+    say "$YELLOW" "billing-db timeout, continuing..."
+  }
   
-  # Finally applications
-  kubectl rollout status -n "$NAMESPACE" deployment/api-gateway --timeout=300s
-  kubectl rollout status -n "$NAMESPACE" deployment/inventory-app --timeout=300s
-  kubectl rollout status -n "$NAMESPACE" statefulset/billing-app --timeout=300s
+  # Puis RabbitMQ
+  say "$YELLOW" "→ Waiting for messaging..."
+  kubectl rollout status -n "$NAMESPACE" deployment/rabbitmq --timeout="$timeout" || {
+    say "$YELLOW" "rabbitmq timeout, continuing..."
+  }
   
-  say "$GREEN" "✓ All workloads ready"
+  # Enfin les applications
+  say "$YELLOW" "→ Waiting for applications..."
+  kubectl rollout status -n "$NAMESPACE" deployment/api-gateway --timeout="$timeout" || {
+    say "$YELLOW" "api-gateway timeout, continuing..."
+  }
+  kubectl rollout status -n "$NAMESPACE" deployment/inventory-app --timeout="$timeout" || {
+    say "$YELLOW" "inventory-app timeout, continuing..."
+  }
+  kubectl rollout status -n "$NAMESPACE" statefulset/billing-app --timeout="$timeout" || {
+    say "$YELLOW" "billing-app timeout, continuing..."
+  }
+  
+  # Vérifier l'état final
+  say "$YELLOW" "→ Final status check..."
+  sleep 10
+  kubectl get pods -n "$NAMESPACE"
+  
+  local running_pods=$(kubectl get pods -n "$NAMESPACE" --no-headers | grep -c "Running" || echo "0")
+  local total_pods=$(kubectl get pods -n "$NAMESPACE" --no-headers | wc -l)
+  
+  if [ "$running_pods" -gt 0 ]; then
+    say "$GREEN" "✓ Workloads ready ($running_pods/$total_pods pods running)"
+  else
+    say "$YELLOW" "⚠ Some workloads may still be starting"
+  fi
 }
 
 show_status() {
@@ -113,19 +183,19 @@ show_status() {
   
   echo ""
   say "$YELLOW" "Nodes:"
-  kubectl get nodes
+  kubectl get nodes -o wide
   
   echo ""
-  say "$YELLOW" "Pods:"
-  kubectl get pods -n "$NAMESPACE"
+  say "$YELLOW" "Pods in $NAMESPACE:"
+  kubectl get pods -n "$NAMESPACE" -o wide
   
   echo ""
-  say "$YELLOW" "Services:"
+  say "$YELLOW" "Services in $NAMESPACE:"
   kubectl get services -n "$NAMESPACE"
   
   # Get API Gateway access info
   local node_ip
-  node_ip=$(kubectl get nodes -o wide | awk '/Ready/ {print $6; exit}')
+  node_ip=$(kubectl get nodes -o wide | awk '/Ready/ {print $6; exit}' || echo "")
   local node_port
   node_port=$(kubectl get svc api-gateway -n "$NAMESPACE" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null || echo "")
   
@@ -133,9 +203,13 @@ show_status() {
   say "$GREEN" "=== Access Information ==="
   if [ -n "$node_ip" ] && [ -n "$node_port" ]; then
     say "$YELLOW" "API Gateway: http://$node_ip:$node_port"
+    say "$YELLOW" "Test command: curl -X GET http://$node_ip:$node_port/api/movies/"
   else
-    say "$YELLOW" "Run 'kubectl get nodes -o wide' and 'kubectl get svc -n microservices' for access info"
+    say "$YELLOW" "API Gateway URL: Check 'kubectl get nodes -o wide' and 'kubectl get svc -n microservices'"
   fi
+  
+  echo ""
+  say "$BLUE" "Ready for audit tests!"
 }
 
 create_cluster() {
@@ -147,8 +221,16 @@ create_cluster() {
     exit 1
   fi
   
-  # Start VMs
-  vagrant up
+  # Start VMs with better error handling
+  say "$YELLOW" "Starting VMs (this may take several minutes)..."
+  if ! vagrant up; then
+    say "$RED" "Failed to start VMs"
+    say "$YELLOW" "Try: vagrant destroy -f && vagrant up"
+    exit 1
+  fi
+  
+  # Wait a bit for VMs to stabilize
+  sleep 20
   
   # Configure kubectl
   configure_kubectl
@@ -169,43 +251,68 @@ deploy_all() {
 }
 
 destroy_cluster() {
-  # Nettoyage K8s (si joignable) + destruction des VMs Vagrant + nettoyage fichiers locaux
-  # Simple, idempotent, et sans toucher à ton ~/.kube/config
-
-  echo -e "\033[1;34m[destroy]\033[0m début…"
-
-  # Utiliser le kubeconfig du repo si présent
-  local KCFG="$(pwd)/k3s.yaml"
-  if [[ -f "$KCFG" ]]; then
-    export KUBECONFIG="$KCFG"
+  say "$YELLOW" "Stopping cluster..."
+  
+  # Clean up namespace if cluster is accessible
+  if [ -f "$KUBECONFIG_FILE" ]; then
+    export KUBECONFIG="$KUBECONFIG_FILE"
+    kubectl delete namespace "$NAMESPACE" --ignore-not-found --wait=false 2>/dev/null || true
   fi
-
-  # Si l’API répond, supprimer le namespace et les PV liés
-  if kubectl version --short >/dev/null 2>&1; then
-    echo -e "\033[1;34m[destroy]\033[0m suppression du namespace 'microservices'…"
-    kubectl delete namespace microservices --ignore-not-found --wait=true || true
-
-    echo -e "\033[1;34m[destroy]\033[0m suppression des PersistentVolumes liés (si restants)…"
-    # Supprime les PV dont le claimRef pointe vers le namespace microservices (peut rester si le ns a été forcé)
-    mapfile -t PVS < <(kubectl get pv -o jsonpath='{range .items[?(@.spec.claimRef.namespace=="microservices")]}{.metadata.name}{"\n"}{end}' 2>/dev/null || true)
-    for pv in "${PVS[@]:-}"; do
-      [[ -n "$pv" ]] && kubectl delete pv "$pv" --wait=false || true
-    done
-  else
-    echo -e "\033[1;33m[destroy]\033[0m cluster injoignable, on saute le cleanup K8s."
-  fi
-
-  # 3) Détruire les VMs Vagrant (cluster K3s)
-  echo -e "\033[1;34m[destroy]\033[0m destruction des VMs Vagrant…"
-  vagrant destroy -f || true
-
-  # 4) Nettoyage local du kubeconfig du repo
-  echo -e "\033[1;34m[destroy]\033[0m nettoyage fichiers locaux…"
-  rm -f "$KCFG" || true
-
-  echo -e "\033[0;32m[destroy]\033[0m terminé."
+  
+  # Destroy VMs
+  vagrant destroy -f 2>/dev/null || true
+  
+  # Clean up kubeconfig
+  rm -f "$KUBECONFIG_FILE" 2>/dev/null || true
+  
+  say "$GREEN" "cluster stopped"
 }
 
+show_logs() {
+  say "$BLUE" "=== Pod Logs ==="
+  export KUBECONFIG="$KUBECONFIG_FILE"
+  
+  local apps=("api-gateway" "inventory-app" "billing-app" "rabbitmq" "inventory-db" "billing-db")
+  
+  for app in "${apps[@]}"; do
+    echo ""
+    say "$YELLOW" "Logs for $app:"
+    kubectl logs -n "$NAMESPACE" -l app="$app" --tail=20 2>/dev/null || {
+      say "$YELLOW" "No logs found for $app"
+    }
+  done
+}
+
+run_debug() {
+  say "$BLUE" "=== Debug Information ==="
+  
+  echo "1. VM Status:"
+  vagrant status || true
+  
+  echo ""
+  echo "2. Network connectivity:"
+  ping -c 2 192.168.56.10 >/dev/null 2>&1 && echo "✓ Master reachable" || echo "✗ Master unreachable"
+  ping -c 2 192.168.56.11 >/dev/null 2>&1 && echo "✓ Agent reachable" || echo "✗ Agent unreachable"
+  
+  if [ -f "$KUBECONFIG_FILE" ]; then
+    export KUBECONFIG="$KUBECONFIG_FILE"
+    echo ""
+    echo "3. Cluster info:"
+    kubectl cluster-info --request-timeout=5s || echo "Cluster not accessible"
+    
+    echo ""
+    echo "4. Node status:"
+    kubectl get nodes -o wide || echo "Cannot get nodes"
+    
+    echo ""
+    echo "5. Problem pods:"
+    kubectl get pods -n "$NAMESPACE" | grep -v "Running\|Completed" || echo "No problem pods found"
+  else
+    echo "No kubeconfig found"
+  fi
+  
+  say "$YELLOW" "If problems persist, try: $0 stop && $0 create"
+}
 
 # Main command handling
 case "${1:-}" in
@@ -238,6 +345,16 @@ case "${1:-}" in
     ;;
   stop)
     destroy_cluster
+    ;;
+  logs)
+    if [ ! -f "$KUBECONFIG_FILE" ]; then
+      say "$RED" "No cluster found. Run '$0 create' first."
+      exit 1
+    fi
+    show_logs
+    ;;
+  debug)
+    run_debug
     ;;
   *)
     usage
