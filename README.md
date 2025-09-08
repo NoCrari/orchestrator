@@ -537,15 +537,56 @@ sudo journalctl -u k3s-agent -f
 
 ## 📈 Observabilité (Prometheus/Grafana)
 
-- Endpoints `/metrics` exposés par: `api-gateway` et `inventory-app` (Prometheus client Python).
-- ServiceMonitors: `Manifests/monitoring/servicemonitors.yaml` (scrape chemin `/metrics` sur port nommé `http`).
-- Installer Prometheus Operator + stack kube-prometheus:
+Cette section explique comment installer la stack monitoring et afficher les métriques/dashboards.
+
+- Endpoints métriques: `/metrics` sur `api-gateway` et `inventory-app`.
+- ServiceMonitors: `Manifests/monitoring/servicemonitors.yaml` (scrape `/metrics` via le port nommé `http`).
+- Dashboard Grafana: `Manifests/monitoring/grafana-dashboard.yaml` (auto‑provisionné par kube‑prometheus).
+
+### 1) Installer la stack Monitoring
+```bash
+# Prometheus Operator + Prometheus + Alertmanager + Grafana
+bash Scripts/install-prometheus-operator.sh
+
+# Vérifications
+kubectl get crd | grep monitoring.coreos.com
+kubectl -n monitoring get pods,svc
+```
+
+### 2) (Ré)appliquer les ServiceMonitors
+```bash
+./orchestrator.sh deploy
+kubectl -n microservices get servicemonitors
+```
+
+### 3) Ouvrir Prometheus
+```bash
+kubectl -n monitoring port-forward svc/prometheus-k8s 9090:9090
+# Navigateur: http://localhost:9090  → Targets: http://localhost:9090/targets
+```
+Exemples PromQL:
+- Taux de requêtes: `sum by (method, endpoint) (rate(http_requests_total{namespace="microservices"}[5m]))`
+- P95 API Gateway: `histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{namespace="microservices"}[5m])))`
+- P95 Inventory: `histogram_quantile(0.95, sum by (le) (rate(inventory_http_request_duration_seconds_bucket{namespace="microservices"}[5m])))`
+
+### 4) Ouvrir Grafana
+```bash
+kubectl -n monitoring port-forward svc/grafana 3000:3000
+# Navigateur: http://localhost:3000
+
+# Récupérer le mot de passe admin (username = admin)
+kubectl -n monitoring get secret grafana -o jsonpath='{.data.admin-password}' | base64 -d; echo
+```
+Le dashboard "Microservices Overview" est disponible (auto‑provisionné via ConfigMap).
+
+### 5) Dépannage
+- CRDs absentes → relancer `Scripts/install-prometheus-operator.sh` puis `./orchestrator.sh deploy`.
+- Cibles DOWN → vérifier le port nommé `http` et que `/metrics` répond dans les pods:
   ```bash
-  bash Scripts/install-prometheus-operator.sh
-  kubectl get crd | grep monitoring.coreos.com
-  kubectl -n monitoring get pods,svc
+  kubectl -n microservices exec -it deploy/inventory-app -- wget -qO- http://127.0.0.1:8080/metrics | head
+  kubectl -n microservices exec -it deploy/api-gateway   -- wget -qO- http://127.0.0.1:3000/metrics | head
   ```
-- Dashboard Grafana prêt à l’emploi: `Manifests/monitoring/grafana-dashboard.yaml` (label `grafana_dashboard: "1"`).
+- Dashboard absent → vérifier `grafana-dashboard-microservices` dans le namespace `monitoring`.
 
 ## 🔧 Détails du Workflow de Build
 
