@@ -48,9 +48,13 @@ def gateway(path: str):
     if not base_url:
         return jsonify({"error": f"Unknown service '{service_name}'"}), 404
 
-    # Conserve le chemin complet tel que reçu (incluant /api/...)
-    # et ajoute la query string si présente
-    target_url = urljoin(base_url, request.path)
+    # Normalise: supprime le slash final (sauf racine) pour éviter 404 en amont
+    normalized_path = request.path
+    if normalized_path != '/' and normalized_path.endswith('/'):
+        normalized_path = normalized_path[:-1]
+
+    # Conserve le chemin complet (incluant /api/...) et ajoute la query string
+    target_url = urljoin(base_url, normalized_path)
     if request.query_string:
         target_url = f"{target_url}?{request.query_string.decode('utf-8')}"
     log.info("→ %s %s -> %s", request.method, path, target_url)

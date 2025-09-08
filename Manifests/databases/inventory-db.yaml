@@ -29,7 +29,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: nocrarii/inventory-db:v4
+          image: nocrarii/inventory-db:v5
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 5432

@@ -280,6 +280,10 @@ echo -n "postgres123" | base64     # → cG9zdGdyZXMxMjM=
 data:
   postgres-user: cG9zdGdyZXM=
   postgres-password: cG9zdGdyZXMxMjM=
+
+# Afficher les identifiants RabbitMQ (décodés)
+kubectl get secret rabbitmq-secrets -n microservices -o jsonpath='{.data.rabbitmq-user}' | base64 -d; echo
+kubectl get secret rabbitmq-secrets -n microservices -o jsonpath='{.data.rabbitmq-password}' | base64 -d; echo
 ```
 
 ## 🏃 Configuration des Déploiements
